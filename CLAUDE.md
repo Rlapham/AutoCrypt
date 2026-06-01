@@ -66,3 +66,9 @@ If a task seems to require a RED action, **stop and write out exactly what you w
     discipline (`event_time` / `knowable_at` / `observed_at`). Code: `src/autocrypt/schema/`.
   - `docs/data-dictionary.md` — every stored field and the DuckDB `events` table layout.
   - `docs/provider-evaluation.md` — free-tier coverage + when a paid tier (Bitquery) is needed.
+- From Phase 3 on (the kill-gate instrument is now load-bearing):
+  - `docs/phase-2-profile.md` — the frequency-vs-expectancy curve output (regenerate with
+    `uv run autocrypt profile`). Code: `src/autocrypt/profiler/` — the point-in-time profiler,
+    derivative signals, inferred-depth liquidity model, constant-product execution-cost model
+    (fees + own price impact, both legs), and rug-filter stub. Re-run it on any new dataset
+    before trusting a GO/NO-GO; never score a signal off `event_time` (use the `knowable_at` gate).

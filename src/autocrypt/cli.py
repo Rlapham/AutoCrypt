@@ -250,6 +250,56 @@ def stats() -> None:
     console.print(t)
 
 
+@app.command()
+def profile(
+    horizon: float = typer.Option(60.0, help="Hold horizon in seconds (entry → exit)."),
+    size_usd: float = typer.Option(250.0, help="Position size per trade (USD)."),
+    min_swaps: int = typer.Option(10, help="Skip pools with fewer swaps (too thin to judge)."),
+    out: str = typer.Option(
+        "docs/phase-2-profile.md", help="Markdown report output path."
+    ),
+) -> None:
+    """Phase 2 KILL-GATE: build the frequency-vs-expectancy curve over the store.
+
+    Point-in-time, survivorship-complete, with realistic fees + own price impact.
+    """
+    from pathlib import Path
+
+    from autocrypt.profiler.report import build_report, render_markdown
+
+    store = _store()
+    rep = build_report(
+        store, horizon_s=horizon, position_size_usd=size_usd, min_swaps=min_swaps
+    )
+    store.close()
+
+    md = render_markdown(rep, horizon_s=horizon, position_size_usd=size_usd)
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(md)
+
+    t = Table(title=f"Profiler — horizon {horizon:.0f}s, ${size_usd:.0f}/trade")
+    t.add_column("Metric", style="cyan")
+    t.add_column("Value", style="green")
+    t.add_row("universe pools (survivorship)", str(rep.universe_pools))
+    t.add_row("pools used", str(rep.pools_used))
+    t.add_row(
+        "blind expectancy / hit / fires",
+        f"{rep.blind.expectancy*100:+.2f}% / {rep.blind.hit_rate*100:.1f}% / {rep.blind.n_fires}",
+    )
+    best = max(rep.curve, key=lambda r: r.expectancy) if rep.curve else rep.blind
+    bthr = "blind" if best.threshold == float("-inf") else f"{best.threshold:.3f}"
+    t.add_row(
+        "best-threshold expectancy",
+        f"{best.expectancy*100:+.2f}% @ thr={bthr} (n={best.n_fires}, hit={best.hit_rate*100:.1f}%)",
+    )
+    t.add_row("report written", out)
+    console.print(t)
+    console.print(
+        "[yellow]Verdict is YELLOW gate #2 — needs human sign-off; read the report's "
+        "caveats before treating any number as the kill-gate answer.[/yellow]"
+    )
+
+
 @app.command(name="export-parquet")
 def export_parquet(out: str = typer.Option("data/parquet", help="Output directory.")) -> None:
     """Export the store to Parquet (one file per event type)."""

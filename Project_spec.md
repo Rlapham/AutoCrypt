@@ -6,15 +6,23 @@
 
 ## Current status
 
-- **Phase:** 1 (data ingestion + historical backfill, read-only) — **complete.**
-- **Next phase:** 2 — Signal-frequency & expectancy profiler + backtest engine. **⛔ THE KILL-GATE.**
-- **Go/no-go gate not yet reached.** The project's viability is undecided until Phase 2.
-- **Data layer is built and a point-in-time store is populated.** No funds, no keys, no trading code.
-- **Phase 1 result:** read-only ingestion (stream/poll/backfill) + canonical point-in-time schema
-  (signed off) + DuckDB store + QC. Populated store: ~47.2k events (23.5k swaps, 91 pools, 10k+
-  wallets) from free APIs (DexPaprika + GeckoTerminal). **Free tiers sufficed — no paid spend.**
-  Honest caveat: backfill covers the freshest launches only, NOT a full 14 days (free-tier
-  firehose limit); deep history is a Phase 2 paid-Bitquery decision. See `docs/phase-1-synthesis.md`.
+- **Phase:** 2 (signal-frequency & expectancy profiler — THE KILL-GATE) — **profiler built & run;
+  GO/NO-GO signed off as CONDITIONAL GO.** Next: acquire a trustworthy multi-day dataset (free
+  `poll` now + a costed Bitquery quote, both approved), re-run `autocrypt profile`, then decide
+  the shape. **No Phase 3 modelling until the real-data curve is signed off.**
+- **Go/no-go evidence is IN, but not decisive.** On the Phase 1 store: blind entry loses
+  (−12%/trade @60s; ~20 pts of fees + own-impact drag on a +7.6% marked drift), BUT the
+  derivative signal selects better-than-random entries (**+6.9% net expectancy over 19 fires,
+  47% hit, permutation p=0.007**). **Promising but unproven** — the dataset is a ~19-minute,
+  single-window, launch-phase snapshot (83 pools), so it measures first-minutes dynamics, not
+  the run-ups the thesis is about. Verdict reads as **CONDITIONAL GO: fund a real dataset and
+  re-run the (now-built) profiler before committing to Phase 3.** Full evidence:
+  `docs/phase-2-profile.md`; analysis: `docs/phase-2-synthesis.md`.
+- **No funds, no keys, no trading-execution code, no paid spend.**
+- **Phase 1 result (unchanged):** read-only ingestion + canonical point-in-time schema (signed
+  off) + DuckDB store + QC; ~47.2k events (23.5k swaps, 91 pools, 10k+ wallets) from free APIs.
+  Honest caveat that bit Phase 2 exactly as predicted: coverage is the freshest launches
+  (~19 min), NOT a full 14 days — deep history needs paid-Bitquery or long `poll` (YELLOW #1).
 
 ---
 
@@ -89,7 +97,16 @@ Parallel **research/backtest track + feedback loop:** survivorship-proof, point-
 
 - **Phase 0 — Scaffolding / context handoff.** ✅ Done (this repo).
 - **Phase 1 — Data ingestion + historical backfill (Solana), read-only.** ✅ **Done.** Built: env-only-secrets Python/uv scaffold; canonical point-in-time event schema (7 types, 3-time `event_time`/`knowable_at`/`observed_at` discipline, signed off); read-only DexPaprika + GeckoTerminal adapters (free tiers, no paid spend); DuckDB store with a `knowable_at` replay gate + Parquet export; stream/poll/backfill ingestion; `autocrypt qc` data-quality checks; data dictionary. *Deliverable met:* a populated point-in-time store (~47.2k events) + a live read-only feed. *Caveat:* coverage is the freshest launches, not a full 14 days — full history needs forward-collection or paid Bitquery (Phase 2). Schema + decisions: `docs/event-schema.md`, `docs/provider-evaluation.md`, `docs/data-dictionary.md`, `docs/phase-1-synthesis.md`.
-- **Phase 2 — Signal-frequency & expectancy profiler + backtest engine. ⛔ THE KILL-GATE.** First concrete build = the **profiler**: instrument the candidate signal at multiple thresholds against historical data and output, per threshold, *how often it fired*, hit rate, and the payoff distribution — the **frequency-vs-expectancy curve** — after realistic slippage/fees/impact and survivorship-proofing. *Decision:* does a profitable operating point exist? If high-freq positive ⇒ build the automated Solana strategy. If only a few-per-week high-conviction operating point survives ⇒ consider the ETH-manual shape. If nothing survives ⇒ stop. This is a YELLOW gate; get explicit human sign-off on the result before Phase 3.
+- **Phase 2 — Signal-frequency & expectancy profiler + backtest engine. ⛔ THE KILL-GATE.**
+  **Profiler BUILT & RUN (`src/autocrypt/profiler/`, `autocrypt profile`).** It instruments the
+  composite-derivative signal at multiple thresholds, point-in-time and survivorship-complete,
+  with realistic fees + own price impact (constant-product, both legs), and outputs the
+  frequency-vs-expectancy curve + a permutation significance test + depth/horizon/rug sweeps.
+  ☑ machinery; ☑ run on Phase 1 store; ☑ honest caveats documented; ☐ **run on a trustworthy
+  multi-day dataset** (blocked on YELLOW #1); ☐ **GO/NO-GO human sign-off** (YELLOW #2, open).
+  *Result so far:* blind loses, signal beats random at the 75th-pct threshold but on n=19 over a
+  ~19-min launch snapshot ⇒ **conditional GO recommended** (fund the real dataset, re-run, then
+  decide automated-Solana / manual-ETH / stop). Get explicit sign-off before any Phase 3 work.
 - **Phase 3 — Signal & wallet-attribution model.** (Only if Phase 2 passes.) Build/validate the lead-weighted attribution model and the composite scorer against the backtester.
 - **Phase 4 — Paper trading on live data.** Forward-test: confirm the live signal matches the backtest. Divergence ⇒ hunt the look-ahead bug. Still no real funds.
 - **Phase 5 — Execution + risk/guardrail layer + kill switches.** Build the brakes (circuit breakers, kill switch, custody plan) **before** the engine touches money. Everything here is built and tested in simulation/paper. Going live is RED.
@@ -97,12 +114,16 @@ Parallel **research/backtest track + feedback loop:** survivorship-proof, point-
 
 ## 8. Open questions / forks for the human (decide when reached)
 
-- **Phase 2 go/no-go** and which project shape the evidence selects (automated-Solana vs manual-ETH vs stop).
+- **✅ RESOLVED — Phase 2 GO/NO-GO (YELLOW #2): CONDITIONAL GO.** Signal beats random (p=0.007)
+  but on a 19-min snapshot ⇒ acquire a real dataset, re-run the profiler, then choose the shape
+  (automated-Solana / manual-ETH / stop). No Phase 3 until the real-data curve is signed off.
+- **⏳ IN PROGRESS — dataset (YELLOW #1): BOTH approved.** (a) Free `poll` forward-collection —
+  start now, $0, runs over wall-clock time (recipe in `docs/phase-2-synthesis.md`). (b) Bitquery
+  archive — **pricing is sales-quoted only (no public number; re-verify at build time)**; concrete
+  scoped quote-request drafted (Solana DEXTrades+creation, SOL+USDC, ~14d, ~3–5M swap rows, archive/
+  Datashare export). **Spend still NOT authorized — bring the quote back before signing up.**
 - **Chain pivot** to Base if attribution degrades in Solana noise.
 - **Capital amount** for Phase 6, and **per-position / max-drawdown limits** (set the numbers).
-- **Paid API budget** (which providers, what tier) — YELLOW. *Phase 1 needed none (free tiers).
-  Next likely ask: **paid Bitquery** for a deep, survivorship-complete swap-level backfill if
-  Phase 2 needs more history than free tiers / forward-collection can provide.*
 - ~~**Canonical event schema** sign-off in Phase 1 — YELLOW.~~ ✅ **Resolved** (signed off as
   proposed: 7 types, 3-time envelope, DuckDB primary, `confirmed`, 2 s latency, 14-day target).
 - **`.claude/settings.json`** does not exist yet (README references it). Human to create the
