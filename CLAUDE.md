@@ -61,4 +61,8 @@ If a task seems to require a RED action, **stop and write out exactly what you w
 ## 5. Required reading
 - `Project_spec.md` (authoritative state)
 - Latest `docs/phase-*-synthesis.md`
-- (Add others here as the project determines they're needed.)
+- From Phase 2 on (the data layer is now load-bearing):
+  - `docs/event-schema.md` — the signed-off canonical schema + the no-look-ahead three-time
+    discipline (`event_time` / `knowable_at` / `observed_at`). Code: `src/autocrypt/schema/`.
+  - `docs/data-dictionary.md` — every stored field and the DuckDB `events` table layout.
+  - `docs/provider-evaluation.md` — free-tier coverage + when a paid tier (Bitquery) is needed.
