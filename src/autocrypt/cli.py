@@ -7,6 +7,8 @@ Commands:
   stream          live tail of newest swaps for a watchlist of pools
   qc              run data-quality checks over the store
   stats           summarize what's in the store
+  dune-validate   ONE free Dune execution: validate field paths + cost before a backfill
+  dune-backfill   backfill a Dune dex_solana.trades window into the store (survivorship-safe)
   export-parquet  export the store to Parquet (one file per event type)
 """
 
@@ -61,10 +63,13 @@ def doctor() -> None:
     table.add_row("data_dir", str(s.data_dir))
     table.add_row("duckdb_path", str(s.duckdb_path))
     for c in (
+        "dune_api_key",
+        "flipside_api_key",
         "bitquery_api_key",
         "birdeye_api_key",
         "dexpaprika_api_key",
         "geckoterminal_api_key",
+        "coingecko_api_key",
         "solana_rpc_url",
     ):
         table.add_row(c, "[green]set[/green]" if s.has(c) else "[dim]not set[/dim]")
@@ -343,6 +348,145 @@ def export_parquet(out: str = typer.Option("data/parquet", help="Output director
     store.close()
     for p in paths:
         console.print(f"wrote {p}")
+
+
+def _dune_or_exit() -> object:
+    """Build a key-gated Dune adapter, or exit with operator instructions if no key."""
+    from autocrypt.providers.dune import Dune
+
+    s = get_settings()
+    configure_logging(s.log_level)
+    if not s.has("dune_api_key"):
+        console.print(
+            "[red]DUNE_API_KEY not set.[/red] Dune is FREE (Community tier): create a key at "
+            "dune.com → Settings → API and add it to .env as DUNE_API_KEY (never commit).\n"
+            "Also save the DEX_TRADES_SQL from src/autocrypt/providers/dune.py as a Dune query "
+            "with `since`/`till` TIMESTAMP parameters, and pass its numeric --query-id."
+        )
+        raise typer.Exit(code=1)
+    return Dune(api_key=s.dune_api_key.get_secret_value())  # type: ignore[union-attr]
+
+
+@app.command(name="dune-validate")
+def dune_validate(
+    query_id: int = typer.Option(..., help="Numeric query_id of the saved DEX_TRADES_SQL query."),
+    since: str = typer.Option(..., help="Window start UTC, e.g. '2026-05-20 12:00:00' or ISO-8601."),
+    till: str = typer.Option(..., help="Window end UTC (exclusive). Keep this window SMALL."),
+    sample_size: int = typer.Option(5000, help="Rows sampled for field-path validation."),
+) -> None:
+    """ONE free Dune execution to validate field paths + cost + survivorship BEFORE a backfill.
+
+    Confirms `dex_solana.trades` column names against a real pull, maps the sample through the
+    canonical mappers, reads Dune's row-count/cost metadata, and checks survivorship breadth.
+    Run this first — the bulk backfill is gated on it (docs/provider-evaluation.md, Phase 2c/2d).
+    """
+    from autocrypt.ingestion.dune_backfill import parse_window, validate_dune
+
+    dune = _dune_or_exit()
+    rep = asyncio.run(
+        _with_aclose(
+            dune,
+            validate_dune(
+                dune,  # type: ignore[arg-type]
+                query_id=query_id,
+                since=parse_window(since),
+                till=parse_window(till),
+                sample_size=sample_size,
+            ),
+        )
+    )
+
+    t = Table(title=f"Dune validation — query {query_id}")
+    t.add_column("Check", style="cyan")
+    t.add_column("Result", style="green")
+    t.add_row("window", f"{rep.since:%Y-%m-%d %H:%M} → {rep.till:%Y-%m-%d %H:%M} UTC")
+    t.add_row("total rows in window (Dune)", str(rep.total_row_count))
+    t.add_row("rows sampled / mapped / skipped", f"{rep.sampled_rows} / {rep.mapped_swaps} / {rep.skipped_non_quote}")
+    t.add_row(
+        "field paths OK?",
+        "[green]yes[/green]" if rep.field_paths_ok else "[red]NO[/red]",
+    )
+    if rep.missing_expected:
+        t.add_row("MISSING columns", ", ".join(rep.missing_expected))
+    if rep.extra_columns:
+        t.add_row("extra columns", ", ".join(rep.extra_columns))
+    t.add_row("native pool address?", "yes" if rep.pool_field_present else "no (surrogate key)")
+    t.add_row("rows with amount_usd", f"{rep.rows_with_usd}/{rep.sampled_rows}")
+    t.add_row("distinct base mints (survivorship)", str(rep.distinct_base_mints))
+    t.add_row("distinct surrogate markets", str(rep.distinct_markets))
+    console.print(t)
+    for note in rep.notes:
+        console.print(f"  • {note}", style="yellow")
+    if rep.field_paths_ok:
+        console.print(
+            "[green]Field paths validated.[/green] Next: `autocrypt dune-backfill --query-id "
+            f"{query_id} --since ... --till ...` for the ~14d window, then `autocrypt qc` + "
+            "`autocrypt profile`.",
+        )
+    else:
+        console.print(
+            "[red]Do NOT backfill yet[/red] — fix the field paths / quote filter above first.",
+        )
+
+
+@app.command(name="dune-backfill")
+def dune_backfill(
+    query_id: int = typer.Option(..., help="Numeric query_id of the saved DEX_TRADES_SQL query."),
+    since: str = typer.Option(..., help="Window start UTC, e.g. '2026-05-19 00:00:00'."),
+    till: str = typer.Option(..., help="Window end UTC (exclusive), e.g. '2026-06-02 00:00:00'."),
+    max_rows: int = typer.Option(10**7, help="Client-side safety ceiling (reported if hit)."),
+    page_size: int = typer.Option(5000, help="Results page size."),
+) -> None:
+    """Backfill a Dune `dex_solana.trades` window into the store (Swap/WalletEvent/PoolCreated).
+
+    Survivorship-complete by construction (every market that traded, rugs included). NOTE: the
+    store has a single DuckDB writer — stop `autocrypt collect` first, or point at a separate DB.
+    """
+    from autocrypt.ingestion.dune_backfill import parse_window, run_dune_backfill
+
+    dune = _dune_or_exit()
+    store = _store()
+    run_id = _run_id("dune-backfill")
+    rep = asyncio.run(
+        _with_aclose(
+            dune,
+            run_dune_backfill(
+                store,
+                dune,  # type: ignore[arg-type]
+                run_id=run_id,
+                query_id=query_id,
+                since=parse_window(since),
+                till=parse_window(till),
+                max_rows=max_rows,
+                page_size=page_size,
+            ),
+        )
+    )
+    store.close()
+
+    t = Table(title=f"Dune backfill — {run_id}")
+    t.add_column("Metric", style="cyan")
+    t.add_column("Value", style="green")
+    t.add_row("window", f"{rep.since:%Y-%m-%d %H:%M} → {rep.till:%Y-%m-%d %H:%M} UTC")
+    t.add_row("raw trade rows", str(rep.raw_rows))
+    t.add_row("swaps mapped", str(rep.swaps_mapped))
+    t.add_row("pools created (proxy)", str(rep.pools_created))
+    t.add_row("skipped (no quote leg)", str(rep.skipped_non_quote))
+    t.add_row("net-new store rows", str(rep.net_new_rows))
+    t.add_row("hit max_rows cap?", "[yellow]YES[/yellow]" if rep.hit_max_rows else "no")
+    console.print(t)
+    for note in rep.notes:
+        console.print(f"  • {note}", style="yellow")
+
+
+async def _with_aclose(provider: object, coro: object) -> object:
+    """Await `coro`, then aclose the provider's HTTP client (best-effort)."""
+    try:
+        return await coro  # type: ignore[misc]
+    finally:
+        aclose = getattr(provider, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 if __name__ == "__main__":

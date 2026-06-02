@@ -7,18 +7,23 @@
 ## Current status
 
 - **Phase:** 2 (signal-frequency & expectancy profiler — THE KILL-GATE) — **profiler built & run;
-  GO/NO-GO is CONDITIONAL GO, still PENDING a real-data curve.** Latest session (Phase 2d): built
-  the free-warehouse adapters and **verified provider access before depending on it** — Flipside's
-  free self-signup turned out to be **effectively closed** (enterprise/"demo" model as of June 2026;
-  the API surface also appears to have moved to a `public/v3` REST endpoint). **Decision
-  (operator-approved): pivot to DUNE as the PRIMARY free archive** (`dex_solana.trades`, decoded +
-  survivorship-complete; Dune's free tier is open self-signup and publicly recommitted for 2026).
-  Built provider-agnostic **Dune AND Flipside adapters** with pure tested mappers (Flipside stays as
-  a swap-in if access reopens); added `flipside`/`dune` sources + API-key settings. **51/51 tests
-  green, ruff clean.** `autocrypt collect` still running (young; wall-clock-bound). Profiler **not
-  re-run** (no new real data yet — no key → no validation/backfill). Verdict unchanged. **No Phase 3
-  until the real-data curve is signed off.** See `docs/phase-2d-synthesis.md` and
-  `docs/provider-evaluation.md` (Phase 2d addendum).
+  GO/NO-GO is CONDITIONAL GO, still PENDING a real-data curve.** Latest session (Phase 2e): built
+  the **runnable Dune ingestion path** — the 2d adapter was correct but inert (no CLI caller,
+  `doctor` didn't even track the key), so the operator's key would have unblocked nothing. Added
+  `autocrypt dune-validate` (ONE free execution: validates field paths against a real pull, maps the
+  sample through the real mappers, reports survivorship breadth + Dune row-count/cost metadata) and
+  `autocrypt dune-backfill` (windowed pull → Swap/WalletEvent/PoolCreated-by-first-trade into the
+  store), plus the ingestion glue `src/autocrypt/ingestion/dune_backfill.py` and warehouse keys in
+  `doctor`. **56/56 tests green, ruff clean.** STILL BLOCKED on the operator prereq: **no `.env` →
+  no `DUNE_API_KEY` → no saved `query_id`**, so no validation/backfill/profiler-re-run yet.
+  `autocrypt collect` still running but **saturated** (~8.6k rows on its 40-pool cohort; a ~10h
+  laptop-sleep gap in the log — wall-clock-bound, unchanged window). Verdict unchanged. **No Phase 3
+  until the real-data curve is signed off.** See `docs/phase-2e-synthesis.md`.
+  *Prior (Phase 2d):* verified provider access before depending — Flipside free self-signup
+  **effectively closed** (enterprise/demo, June 2026) → **pivot to DUNE as PRIMARY free archive**
+  (`dex_solana.trades`, decoded + survivorship-complete; open signup, recommitted for 2026). Built
+  provider-agnostic Dune + Flipside adapters with pure tested mappers (Flipside = swap-in). See
+  `docs/phase-2d-synthesis.md` and `docs/provider-evaluation.md` (Phase 2d addendum).
   *Prior (Phase 2c):* declined the Bitquery spend (~$2–6k); scouted cheaper archives; originally
   chose Flipside-primary/Dune-cross-check (now revised by 2d). See `docs/phase-2c-synthesis.md`.
   *Prior (Phase 2b):* caught that free `poll` collects no swaps, built `autocrypt collect`
@@ -141,10 +146,13 @@ Parallel **research/backtest track + feedback loop:** survivorship-proof, point-
   free self-signup (enterprise/demo model, June 2026) → **decision = DUNE `dex_solana.trades` as the
   PRIMARY free archive** (open signup, free plan publicly committed for 2026; decoded +
   survivorship-complete). **Dune AND Flipside adapters built + tested** (Flipside is a swap-in if
-  access reopens). Next session: operator provisions a free `DUNE_API_KEY` + saves the adapter's
-  `DEX_TRADES_SQL` as a Dune query (note its `query_id`), then I run ONE validation execution
-  (confirm field paths + measure free **credit cost**/row caps + survivorship), then a ~14d backfill
-  + profiler re-run. Open: Dune free is credit-metered (~2,500/mo) so a full pull may need
+  access reopens). **2e: the Dune ingestion path is now RUNNABLE** — `autocrypt dune-validate` (one
+  free execution; validates field paths against a real pull + measures row volume/cost + survivorship)
+  and `autocrypt dune-backfill` (windowed pull into the store) + `ingestion/dune_backfill.py`.
+  STILL BLOCKED on the operator prereq: provision a free `DUNE_API_KEY` (no `.env` exists yet — copy
+  `.env.example`) + save `DEX_TRADES_SQL` as a Dune query with `since`/`till` TIMESTAMP params (note
+  its `query_id`). Then `dune-validate` over a small window → size the 14d backfill vs the credit
+  cap → backfill + `qc` + profiler re-run. Open: Dune free is credit-metered (~2,500/mo) so a full pull may need
   scoping/overage; warehouse tables have no native pool address → surrogate (base,quote,project) key
   + first-trade creation proxy; field paths unvalidated vs a live pull. Only paid fallback =
   CoinGecko Analyst $129/mo (needs a cap). See `docs/provider-evaluation.md` (Phase 2d addendum).

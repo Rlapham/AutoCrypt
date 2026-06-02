@@ -221,6 +221,22 @@ class Dune(HTTPProvider):
             await asyncio.sleep(poll_interval_s)
         raise RuntimeError(f"Dune execution {execution_id} did not finish in time")
 
+    async def get_execution_status(self, execution_id: str) -> dict[str, Any]:
+        """Return the raw status payload (carries `result_metadata`: row count, bytes,
+        execution time — the free-tier cost proxy the validation step reports). $0."""
+        return await self._get(f"/execution/{execution_id}/status")
+
+    async def fetch_results_page(
+        self, execution_id: str, *, limit: int, offset: int = 0
+    ) -> dict[str, Any]:
+        """Fetch ONE results page (with its `result.metadata`), rows NOT lower-cased.
+
+        Used by the validation path, which needs the raw column names exactly as Dune
+        returns them to confirm field paths. Bulk ingestion uses `iter_trade_rows`."""
+        return await self._get(
+            f"/execution/{execution_id}/results", params={"limit": limit, "offset": offset}
+        )
+
     async def iter_trade_rows(
         self,
         query_id: int,
