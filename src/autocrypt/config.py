@@ -41,6 +41,8 @@ class Settings(BaseSettings):
 
     # ── Provider API keys (read-only; optional — free tiers may not need all) ──
     bitquery_api_key: SecretStr | None = None
+    flipside_api_key: SecretStr | None = None  # free Community tier (Data API)
+    dune_api_key: SecretStr | None = None  # free tier (2,500 credits/mo) — cross-check
     birdeye_api_key: SecretStr | None = None
     dexpaprika_api_key: SecretStr | None = None
     geckoterminal_api_key: SecretStr | None = None

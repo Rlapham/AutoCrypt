@@ -7,15 +7,20 @@
 ## Current status
 
 - **Phase:** 2 (signal-frequency & expectancy profiler — THE KILL-GATE) — **profiler built & run;
-  GO/NO-GO is CONDITIONAL GO, still PENDING a real-data curve.** Latest session (Phase 2c):
-  declined the Bitquery spend (no quote; ~$2–6k judged too high) and **scouted cheaper archives** —
-  found that decoded-DEX-trade **warehouses give survivorship-complete Solana swap history at ~$0**.
-  **Decision (operator-approved): pivot to Flipside-free as the primary archive, Dune
-  `dex_solana.trades` as the SQL cross-check; Bitquery shelved.** No code this session (research +
-  docs only). `autocrypt collect` still running but young (~hours of data; wall-clock-bound).
-  Profiler **not re-run** (collect holds the DuckDB writer lock and a re-run would only reproduce
-  the existing curve) — verdict unchanged. **No Phase 3 until the real-data curve is signed off.**
-  See `docs/phase-2c-synthesis.md` and `docs/provider-evaluation.md` (Phase 2c addendum).
+  GO/NO-GO is CONDITIONAL GO, still PENDING a real-data curve.** Latest session (Phase 2d): built
+  the free-warehouse adapters and **verified provider access before depending on it** — Flipside's
+  free self-signup turned out to be **effectively closed** (enterprise/"demo" model as of June 2026;
+  the API surface also appears to have moved to a `public/v3` REST endpoint). **Decision
+  (operator-approved): pivot to DUNE as the PRIMARY free archive** (`dex_solana.trades`, decoded +
+  survivorship-complete; Dune's free tier is open self-signup and publicly recommitted for 2026).
+  Built provider-agnostic **Dune AND Flipside adapters** with pure tested mappers (Flipside stays as
+  a swap-in if access reopens); added `flipside`/`dune` sources + API-key settings. **51/51 tests
+  green, ruff clean.** `autocrypt collect` still running (young; wall-clock-bound). Profiler **not
+  re-run** (no new real data yet — no key → no validation/backfill). Verdict unchanged. **No Phase 3
+  until the real-data curve is signed off.** See `docs/phase-2d-synthesis.md` and
+  `docs/provider-evaluation.md` (Phase 2d addendum).
+  *Prior (Phase 2c):* declined the Bitquery spend (~$2–6k); scouted cheaper archives; originally
+  chose Flipside-primary/Dune-cross-check (now revised by 2d). See `docs/phase-2c-synthesis.md`.
   *Prior (Phase 2b):* caught that free `poll` collects no swaps, built `autocrypt collect`
   (survivorship-safe forward-collector) + a spend-gated Bitquery scaffold. See `docs/phase-2b-synthesis.md`.
 - **Go/no-go evidence is IN, but not decisive.** On the Phase 1 store: blind entry loses
@@ -131,13 +136,18 @@ Parallel **research/backtest track + feedback loop:** survivorship-proof, point-
   `autocrypt collect` (enumerate + tail swaps for a 24h-held survivorship-safe cohort), unattended
   via `nohup` → `data/collect.log`. Caveat: a `nohup` process does not survive reboot — a launchd
   job is the durable form (not installed unprompted). Coverage is a 40-pool rolling sample,
-  wall-clock-bound (only hours of data so far). (b) **Historical archive — DIRECTION CHANGED:**
-  Bitquery (~$2–6k) **shelved**; **decision = Flipside-free Data API (`solana.defi.ez_dex_swaps`,
-  decoded, survivorship-complete) as primary archive, Dune `dex_solana.trades` as SQL cross-check.**
-  Next session builds the Flipside adapter (mirroring the Bitquery scaffold) + a free validation
-  query + a ~14d backfill. Open: free-tier caps unvalidated vs a full pull; pool-creation enumerated
-  via first-swap proxy. Only remaining paid option = CoinGecko Analyst $129/mo (fallback, needs a cap).
-  See `docs/provider-evaluation.md` (Phase 2c addendum).
+  wall-clock-bound (only hours of data so far). (b) **Historical archive — DIRECTION CHANGED AGAIN
+  (Phase 2d):** Bitquery (~$2–6k) shelved; Flipside-free turned out **effectively closed** to new
+  free self-signup (enterprise/demo model, June 2026) → **decision = DUNE `dex_solana.trades` as the
+  PRIMARY free archive** (open signup, free plan publicly committed for 2026; decoded +
+  survivorship-complete). **Dune AND Flipside adapters built + tested** (Flipside is a swap-in if
+  access reopens). Next session: operator provisions a free `DUNE_API_KEY` + saves the adapter's
+  `DEX_TRADES_SQL` as a Dune query (note its `query_id`), then I run ONE validation execution
+  (confirm field paths + measure free **credit cost**/row caps + survivorship), then a ~14d backfill
+  + profiler re-run. Open: Dune free is credit-metered (~2,500/mo) so a full pull may need
+  scoping/overage; warehouse tables have no native pool address → surrogate (base,quote,project) key
+  + first-trade creation proxy; field paths unvalidated vs a live pull. Only paid fallback =
+  CoinGecko Analyst $129/mo (needs a cap). See `docs/provider-evaluation.md` (Phase 2d addendum).
 - **Chain pivot** to Base if attribution degrades in Solana noise.
 - **Capital amount** for Phase 6, and **per-position / max-drawdown limits** (set the numbers).
 - ~~**Canonical event schema** sign-off in Phase 1 — YELLOW.~~ ✅ **Resolved** (signed off as

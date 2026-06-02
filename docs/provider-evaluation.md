@@ -101,6 +101,54 @@ spend-gated Bitquery scaffold) emitting the canonical schema.
    **first swap** as a creation proxy (or join a token/pool-creation table), not a native feed.
 3. Signups are $0 but need an account + API key in `.env` (never committed).
 
+## Phase 2d addendum — Flipside access closed → Dune is now PRIMARY (verified June 2026)
+
+*Context: 2c chose Flipside-free as the primary archive on the strength of its data. 2d
+verified the **access model** before building a backfill on it — and the door is closed.
+This **supersedes** the "Flipside ⭐ chosen primary" row above.*
+
+**Finding — Flipside free self-signup is effectively closed.** As of June 2026 Flipside
+repositioned to an enterprise / "Agents as a Service" model. Authoritative live pages
+(homepage, `/api-keys`) funnel only to **"Get a personalized demo"** and **"Log In"** —
+no public free-signup CTA. The "free API key" self-serve story survives only in **stale
+secondary sources**: the GitHub SDK README (*formerly ShroomDK*), QuickNode's writeup, and
+the docs pages (which 403 automated fetches, so they could not be read directly). The API
+surface also appears to have **moved** to a REST `api.flipsidecrypto.xyz/public/v3`
+endpoint (the adapter targets the older `api-v2…/json-rpc`). *Caveat:* a user with a legacy
+account may still be able to generate a key via `app.flipsidecrypto.xyz` — the operator's
+own login attempt is the tiebreaker — but a NEW user is funneled to sales.
+
+**Decision (operator-approved): pivot to Dune as the PRIMARY free archive.** Dune's free
+tier is **open self-signup** and was **publicly recommitted in Jan 2026** (CEO: "we will
+keep having a generous free plan to serve the broader Dune community"). `dex_solana.trades`
+is decoded + survivorship-complete — the same property that made Flipside attractive.
+
+| Provider | Access (June 2026) | Cost | Role now |
+|---|---|---|---|
+| **Dune** ⭐ | **Open self-signup**, free plan publicly committed | Free (credit-metered, ~2,500/mo) | **PRIMARY archive** (`dex_solana.trades`) |
+| Flipside | **Effectively closed** to free self-signup (enterprise/demo) | n/a to us | **Swap-in only** if access reopens (adapter built) |
+| CoinGecko Analyst | Open | $129/mo | Paid fallback if Dune free credits too tight — YELLOW |
+
+**Free-tier mechanics that shaped the Dune adapter:**
+- Dune free executes **saved queries by ID** (ad-hoc SQL creation via API is paid). So the
+  adapter ships `DEX_TRADES_SQL` to paste into a Dune query with `{{since}}`/`{{till}}`
+  params; `iter_trade_rows(query_id, …)` executes it via the Execution API
+  (`/query/{id}/execute` → poll `/execution/{id}/status` → page `/execution/{id}/results`),
+  auth header `X-Dune-Api-Key`.
+- Free is **credit-metered** → a full 14d pull may exceed the monthly credit cap. The ONE
+  validation execution must measure real cost/row-count; scope or paginate accordingly.
+
+**Both warehouse adapters share two honest limits (validate against ONE live pull):**
+1. **Field paths documented-but-unvalidated** — no live response has yet confirmed
+   `dex_solana.trades` / `ez_dex_swaps` column names. Mappers are defensive (lower-case
+   normalization, candidate pool fields); the validation query is the source of truth.
+2. **No native pool address** in either table → a deterministic **surrogate market key**
+   per (base, quote, project/program) groups a launch's swaps; first trade = creation proxy.
+
+Code: `src/autocrypt/providers/dune.py` (primary), `src/autocrypt/providers/flipside.py`
+(swap-in), tests `tests/test_dune.py` + `tests/test_flipside.py`. See
+`docs/phase-2d-synthesis.md`.
+
 ### Flipside / Dune / Helius sources
 - Flipside `ez_dex_swaps` docs — https://docs.flipsidecrypto.com/blockchain-data/solana/defi/ez-dex-swaps
 - Flipside Data API / rate limits — https://docs.flipsidecrypto.xyz/flipside-api/get-started/rate-limits
