@@ -157,6 +157,41 @@ def poll(
 
 
 @app.command()
+def collect(
+    interval: float = typer.Option(60.0, help="Seconds between collection cycles."),
+    iterations: int = typer.Option(0, help="Number of cycles (0 = run until Ctrl-C)."),
+    enum_pages: int = typer.Option(2, help="Pages of newest pools enumerated per cycle."),
+    watch_max: int = typer.Option(40, help="Max pools tailed for swaps at once (newest kept)."),
+    max_pool_age_h: float = typer.Option(24.0, help="Stop tailing a pool this many hours after creation."),
+    tx_pages: int = typer.Option(2, help="Pages of recent swaps tailed per pool per cycle."),
+) -> None:
+    """Forward-collect a survivorship-complete SWAP dataset (the free multi-day path).
+
+    Unlike `poll` (PoolCreated only) or `stream` (fixed watchlist), `collect` both
+    enumerates new pools AND tails their swaps over a rolling, age-bounded watchlist.
+    Run unattended for days/weeks to accumulate the dataset the kill-gate profiler needs.
+    """
+    from autocrypt.ingestion.collect import run_collect
+
+    store = _store()
+    run_id = _run_id("collect")
+    total = asyncio.run(
+        run_collect(
+            store,
+            run_id=run_id,
+            interval_s=interval,
+            max_iterations=None if iterations == 0 else iterations,
+            enum_pages=enum_pages,
+            watch_max=watch_max,
+            max_pool_age_s=max_pool_age_h * 3600.0,
+            tx_pages=tx_pages,
+        )
+    )
+    store.close()
+    console.print(f"collect wrote {total} swap/wallet records ({run_id})")
+
+
+@app.command()
 def stream(
     duration: float = typer.Option(30.0, help="Seconds to tail (0 = until Ctrl-C)."),
     interval: float = typer.Option(3.0, help="Seconds between tail ticks."),

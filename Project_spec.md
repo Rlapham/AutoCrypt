@@ -7,9 +7,17 @@
 ## Current status
 
 - **Phase:** 2 (signal-frequency & expectancy profiler — THE KILL-GATE) — **profiler built & run;
-  GO/NO-GO signed off as CONDITIONAL GO.** Next: acquire a trustworthy multi-day dataset (free
-  `poll` now + a costed Bitquery quote, both approved), re-run `autocrypt profile`, then decide
-  the shape. **No Phase 3 modelling until the real-data curve is signed off.**
+  GO/NO-GO is CONDITIONAL GO, still PENDING a real-data curve.** Latest session (Phase 2c):
+  declined the Bitquery spend (no quote; ~$2–6k judged too high) and **scouted cheaper archives** —
+  found that decoded-DEX-trade **warehouses give survivorship-complete Solana swap history at ~$0**.
+  **Decision (operator-approved): pivot to Flipside-free as the primary archive, Dune
+  `dex_solana.trades` as the SQL cross-check; Bitquery shelved.** No code this session (research +
+  docs only). `autocrypt collect` still running but young (~hours of data; wall-clock-bound).
+  Profiler **not re-run** (collect holds the DuckDB writer lock and a re-run would only reproduce
+  the existing curve) — verdict unchanged. **No Phase 3 until the real-data curve is signed off.**
+  See `docs/phase-2c-synthesis.md` and `docs/provider-evaluation.md` (Phase 2c addendum).
+  *Prior (Phase 2b):* caught that free `poll` collects no swaps, built `autocrypt collect`
+  (survivorship-safe forward-collector) + a spend-gated Bitquery scaffold. See `docs/phase-2b-synthesis.md`.
 - **Go/no-go evidence is IN, but not decisive.** On the Phase 1 store: blind entry loses
   (−12%/trade @60s; ~20 pts of fees + own-impact drag on a +7.6% marked drift), BUT the
   derivative signal selects better-than-random entries (**+6.9% net expectancy over 19 fires,
@@ -102,8 +110,10 @@ Parallel **research/backtest track + feedback loop:** survivorship-proof, point-
   composite-derivative signal at multiple thresholds, point-in-time and survivorship-complete,
   with realistic fees + own price impact (constant-product, both legs), and outputs the
   frequency-vs-expectancy curve + a permutation significance test + depth/horizon/rug sweeps.
-  ☑ machinery; ☑ run on Phase 1 store; ☑ honest caveats documented; ☐ **run on a trustworthy
-  multi-day dataset** (blocked on YELLOW #1); ☐ **GO/NO-GO human sign-off** (YELLOW #2, open).
+  ☑ machinery; ☑ run on Phase 1 store; ☑ honest caveats documented; ☑ **free forward-collector
+  built & running** (`autocrypt collect` — `poll` alone was swap-less); ◐ **trustworthy
+  multi-day dataset accumulating** (wall-clock-bound; Bitquery archive held for a quote);
+  ☐ **GO/NO-GO human sign-off on the real-data curve** (YELLOW #2, open).
   *Result so far:* blind loses, signal beats random at the 75th-pct threshold but on n=19 over a
   ~19-min launch snapshot ⇒ **conditional GO recommended** (fund the real dataset, re-run, then
   decide automated-Solana / manual-ETH / stop). Get explicit sign-off before any Phase 3 work.
@@ -117,11 +127,17 @@ Parallel **research/backtest track + feedback loop:** survivorship-proof, point-
 - **✅ RESOLVED — Phase 2 GO/NO-GO (YELLOW #2): CONDITIONAL GO.** Signal beats random (p=0.007)
   but on a 19-min snapshot ⇒ acquire a real dataset, re-run the profiler, then choose the shape
   (automated-Solana / manual-ETH / stop). No Phase 3 until the real-data curve is signed off.
-- **⏳ IN PROGRESS — dataset (YELLOW #1): BOTH approved.** (a) Free `poll` forward-collection —
-  start now, $0, runs over wall-clock time (recipe in `docs/phase-2-synthesis.md`). (b) Bitquery
-  archive — **pricing is sales-quoted only (no public number; re-verify at build time)**; concrete
-  scoped quote-request drafted (Solana DEXTrades+creation, SOL+USDC, ~14d, ~3–5M swap rows, archive/
-  Datashare export). **Spend still NOT authorized — bring the quote back before signing up.**
+- **⏳ IN PROGRESS — dataset (YELLOW #1).** (a) Free forward-collection — **RUNNING:**
+  `autocrypt collect` (enumerate + tail swaps for a 24h-held survivorship-safe cohort), unattended
+  via `nohup` → `data/collect.log`. Caveat: a `nohup` process does not survive reboot — a launchd
+  job is the durable form (not installed unprompted). Coverage is a 40-pool rolling sample,
+  wall-clock-bound (only hours of data so far). (b) **Historical archive — DIRECTION CHANGED:**
+  Bitquery (~$2–6k) **shelved**; **decision = Flipside-free Data API (`solana.defi.ez_dex_swaps`,
+  decoded, survivorship-complete) as primary archive, Dune `dex_solana.trades` as SQL cross-check.**
+  Next session builds the Flipside adapter (mirroring the Bitquery scaffold) + a free validation
+  query + a ~14d backfill. Open: free-tier caps unvalidated vs a full pull; pool-creation enumerated
+  via first-swap proxy. Only remaining paid option = CoinGecko Analyst $129/mo (fallback, needs a cap).
+  See `docs/provider-evaluation.md` (Phase 2c addendum).
 - **Chain pivot** to Base if attribution degrades in Solana noise.
 - **Capital amount** for Phase 6, and **per-position / max-drawdown limits** (set the numbers).
 - ~~**Canonical event schema** sign-off in Phase 1 — YELLOW.~~ ✅ **Resolved** (signed off as

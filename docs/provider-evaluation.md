@@ -70,6 +70,46 @@ scope* — not before.
 3. **Flag for Phase 2:** quantify deep-backfill point/CU cost against the exact backtest universe
    and bring a concrete Bitquery-paid proposal (price + scope) as a YELLOW item then.
 
+## Phase 2c addendum — cheaper-than-Bitquery archive (verified June 2026)
+
+*Context: the Phase 2b Bitquery estimate (~$2–6k effective, custom-quoted) was judged too high
+for a one-time ~14d backfill. Operator asked to scout cheaper sources. Decision below
+**supersedes** the "Bitquery is the likely paid need" flag in the TL;DR above.*
+
+**Reframe:** our need — survivorship-complete, **decoded**, swap-level Solana DEX history
+**including the rugs/duds** — is best served by **decoded-DEX-trade data warehouses**, not by
+per-call price APIs. Warehouses index *all* on-chain swaps, so dead/rugged tokens are present
+**by construction** — *better* survivorship than DexPaprika's currently-listed-pools view.
+
+| Provider | What it gives | Cost (one-time ~14d pull) | Fit |
+|---|---|---|---|
+| **Flipside** ⭐ | SQL over `solana.defi.ez_dex_swaps` — decoded, Raydium/Orca/Meteora/PumpSwap/Jupiter, all tokens, deep history | **Free** Data API (Community; Pro custom) | **Chosen primary** — decoded + survivorship-complete at $0 |
+| **Dune** | `dex_solana.trades` decoded table | Free = 2,500 credits/mo + API; bulk pull burns credits → overage $5/100 or ~$399/mo Plus | **Cross-check / fallback** |
+| **CoinGecko onchain** (= paid GeckoTerminal) | OHLCV + trades, 37M+ DEX tokens, long-tail | $35/mo (6mo) / **$129/mo** Analyst (full from 2021) | Cheap turnkey insurance if free caps too tight |
+| **Helius** | Solana-native raw/enhanced tx, streaming | credit-based; ~$49–99/mo dev tiers | Earmarked for the **live feed (Phase 4)**, not historical backfill (decode burden) |
+| **Bitquery** | Deep archive | **$2–6k**, custom-quoted | **Shelved** — unnecessary given the above |
+| ~~Polygon.io~~ | CEX/listed-crypto aggregates | — | **Not a fit** — no brand-new low-cap Solana launches |
+
+**Decision (operator-approved):** pivot from Bitquery to **Flipside-free as the primary archive,
+Dune as the SQL cross-check.** Build a provider-agnostic Flipside adapter (same pattern as the
+spend-gated Bitquery scaffold) emitting the canonical schema.
+
+**Open validation items (next session, all $0/GREEN):**
+1. Free-tier credit/row caps unverified against a *full* 14d universe pull — large extractions
+   paginate and may hit per-query row limits or monthly credit caps. Test with one real query.
+2. `ez_dex_swaps` is a **swap** table — enumerate pool *creation* by deriving each token's
+   **first swap** as a creation proxy (or join a token/pool-creation table), not a native feed.
+3. Signups are $0 but need an account + API key in `.env` (never committed).
+
+### Flipside / Dune / Helius sources
+- Flipside `ez_dex_swaps` docs — https://docs.flipsidecrypto.com/blockchain-data/solana/defi/ez-dex-swaps
+- Flipside Data API / rate limits — https://docs.flipsidecrypto.xyz/flipside-api/get-started/rate-limits
+- Flipside Python SDK — https://pypi.org/project/flipside/
+- Dune `dex_solana.trades` — https://docs.dune.com/data-catalog/curated/trading/solana/solana-dex-trades
+- Dune pricing (free = 2,500 credits/mo + API) — https://dune.com/pricing
+- CoinGecko onchain DEX APIs comparison — https://www.coingecko.com/learn/top-5-best-onchain-dex-data-apis
+- Helius historical data / pricing — https://www.helius.dev/historical-data ; https://www.helius.dev/pricing
+
 ## Sources
 - Bitquery Solana docs — https://docs.bitquery.io/docs/blockchain/Solana/
 - Bitquery pricing — https://bitquery.io/pricing ; points — https://docs.bitquery.io/docs/ide/points/
