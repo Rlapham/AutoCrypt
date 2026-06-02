@@ -6,19 +6,22 @@
 
 ## Current status
 
-- **Phase:** 2 (signal-frequency & expectancy profiler — THE KILL-GATE) — **profiler built & run;
-  GO/NO-GO is CONDITIONAL GO, still PENDING a real-data curve.** Latest session (Phase 2e): built
-  the **runnable Dune ingestion path** — the 2d adapter was correct but inert (no CLI caller,
-  `doctor` didn't even track the key), so the operator's key would have unblocked nothing. Added
-  `autocrypt dune-validate` (ONE free execution: validates field paths against a real pull, maps the
-  sample through the real mappers, reports survivorship breadth + Dune row-count/cost metadata) and
-  `autocrypt dune-backfill` (windowed pull → Swap/WalletEvent/PoolCreated-by-first-trade into the
-  store), plus the ingestion glue `src/autocrypt/ingestion/dune_backfill.py` and warehouse keys in
-  `doctor`. **56/56 tests green, ruff clean.** STILL BLOCKED on the operator prereq: **no `.env` →
-  no `DUNE_API_KEY` → no saved `query_id`**, so no validation/backfill/profiler-re-run yet.
-  `autocrypt collect` still running but **saturated** (~8.6k rows on its 40-pool cohort; a ~10h
-  laptop-sleep gap in the log — wall-clock-bound, unchanged window). Verdict unchanged. **No Phase 3
-  until the real-data curve is signed off.** See `docs/phase-2e-synthesis.md`.
+- **Phase:** 2 (signal-frequency & expectancy profiler — THE KILL-GATE) — **profiler RE-RUN ON REAL
+  DATA; the conditional-GO FLIPPED to a provisional NO-GO.** Latest session (Phase 2f): the operator's
+  Dune key + saved cohort query (`query_id 7637616`) arrived; the real-data backfill + profiler ran.
+  On the real cohort (**616 pools, n=1,763 fires @60s**): **blind −15.99%, best-threshold signal
+  −15.16%** (still a loss), signal gets *worse* as you tighten it, and it's **negative across every
+  sweep** (depth ×0.5–×2 = −22.6%/−16%/−11.4% never flips; horizons 30/60/120s; rug on/off) and the
+  permutation test. The Phase-1 snapshot's +6.8%/p=0.008 was **n=19 small-sample noise.** The result
+  is **valid** (profiler censors forward-truncated entries; cohort is creation-selected =
+  survivorship-safe) but covers a **single ~1h creation window** — free Dune is **exhausted** (~335k
+  rows/mo; the one backfill used them up; a fresh pull 402'd at row 0). Three live bugs were caught +
+  fixed (free performance tier, ` UTC` timestamp parsing, graceful 402 handling); query re-scoped to a
+  new-launch cohort. **57/57 tests green, ruff clean.** **Decision on record: confirm at $0 after the
+  Dune monthly credit reset** (one small clean second window), then finalize NO-GO. **No Phase 3.**
+  See `docs/phase-2f-synthesis.md` + `docs/phase-2-profile-dune.md`.
+  *Prior (Phase 2e):* built the runnable Dune ingestion path (`dune-validate` / `dune-backfill` +
+  `ingestion/dune_backfill.py`); was blocked on the operator key. See `docs/phase-2e-synthesis.md`.
   *Prior (Phase 2d):* verified provider access before depending — Flipside free self-signup
   **effectively closed** (enterprise/demo, June 2026) → **pivot to DUNE as PRIMARY free archive**
   (`dex_solana.trades`, decoded + survivorship-complete; open signup, recommitted for 2026). Built
@@ -28,14 +31,16 @@
   chose Flipside-primary/Dune-cross-check (now revised by 2d). See `docs/phase-2c-synthesis.md`.
   *Prior (Phase 2b):* caught that free `poll` collects no swaps, built `autocrypt collect`
   (survivorship-safe forward-collector) + a spend-gated Bitquery scaffold. See `docs/phase-2b-synthesis.md`.
-- **Go/no-go evidence is IN, but not decisive.** On the Phase 1 store: blind entry loses
-  (−12%/trade @60s; ~20 pts of fees + own-impact drag on a +7.6% marked drift), BUT the
-  derivative signal selects better-than-random entries (**+6.9% net expectancy over 19 fires,
-  47% hit, permutation p=0.007**). **Promising but unproven** — the dataset is a ~19-minute,
-  single-window, launch-phase snapshot (83 pools), so it measures first-minutes dynamics, not
-  the run-ups the thesis is about. Verdict reads as **CONDITIONAL GO: fund a real dataset and
-  re-run the (now-built) profiler before committing to Phase 3.** Full evidence:
-  `docs/phase-2-profile.md`; analysis: `docs/phase-2-synthesis.md`.
+- **Go/no-go evidence is now DECISIVE-NEGATIVE on real data (provisional NO-GO).** The Phase-1
+  snapshot looked like a CONDITIONAL GO (signal +6.9% net over **19 fires**, p=0.007) — but on the
+  real Dune cohort (**n=1,763 fires**, 616 pools) the edge **reverses**: blind −15.99%, best-threshold
+  signal −15.16%, negative across depth/horizon/rug sweeps and the permutation test, and the signal
+  makes returns *worse* as it tightens. Cost drag ~16% vs ~0% marked drift dominates. The snapshot's
+  edge was **small-sample noise.** Valid (profiler censors truncated entries; creation-selected
+  cohort) but single ~1h creation window. **Verdict: provisional NO-GO for automated short-hold
+  Solana**; confirm with one free second window after the Dune monthly reset, then finalize.
+  Real-data evidence: `docs/phase-2-profile-dune.md`; analysis: `docs/phase-2f-synthesis.md`.
+  (Snapshot evidence: `docs/phase-2-profile.md` / `docs/phase-2-synthesis.md`.)
 - **No funds, no keys, no trading-execution code, no paid spend.**
 - **Phase 1 result (unchanged):** read-only ingestion + canonical point-in-time schema (signed
   off) + DuckDB store + QC; ~47.2k events (23.5k swaps, 91 pools, 10k+ wallets) from free APIs.
@@ -121,12 +126,13 @@ Parallel **research/backtest track + feedback loop:** survivorship-proof, point-
   with realistic fees + own price impact (constant-product, both legs), and outputs the
   frequency-vs-expectancy curve + a permutation significance test + depth/horizon/rug sweeps.
   ☑ machinery; ☑ run on Phase 1 store; ☑ honest caveats documented; ☑ **free forward-collector
-  built & running** (`autocrypt collect` — `poll` alone was swap-less); ◐ **trustworthy
-  multi-day dataset accumulating** (wall-clock-bound; Bitquery archive held for a quote);
-  ☐ **GO/NO-GO human sign-off on the real-data curve** (YELLOW #2, open).
-  *Result so far:* blind loses, signal beats random at the 75th-pct threshold but on n=19 over a
-  ~19-min launch snapshot ⇒ **conditional GO recommended** (fund the real dataset, re-run, then
-  decide automated-Solana / manual-ETH / stop). Get explicit sign-off before any Phase 3 work.
+  built & running**; ☑ **real Dune cohort backfilled + profiler RE-RUN (2f)**; ◐ **$0 second-window
+  confirmation pending the Dune monthly credit reset**; ☐ **final NO-GO + pivot-vs-shelve sign-off**
+  (YELLOW #2).
+  *Result:* on the real cohort (n=1,763) the signal **loses −15%** and is negative across every
+  sweep — the snapshot's conditional GO was n=19 noise ⇒ **provisional NO-GO** for automated
+  short-hold Solana. Confirm with one free second window post-reset, then finalize and choose
+  automated-Solana(dead) / Base / longer-hold-judgmental / stop. No Phase 3 on this evidence.
 - **Phase 3 — Signal & wallet-attribution model.** (Only if Phase 2 passes.) Build/validate the lead-weighted attribution model and the composite scorer against the backtester.
 - **Phase 4 — Paper trading on live data.** Forward-test: confirm the live signal matches the backtest. Divergence ⇒ hunt the look-ahead bug. Still no real funds.
 - **Phase 5 — Execution + risk/guardrail layer + kill switches.** Build the brakes (circuit breakers, kill switch, custody plan) **before** the engine touches money. Everything here is built and tested in simulation/paper. Going live is RED.
@@ -134,9 +140,12 @@ Parallel **research/backtest track + feedback loop:** survivorship-proof, point-
 
 ## 8. Open questions / forks for the human (decide when reached)
 
-- **✅ RESOLVED — Phase 2 GO/NO-GO (YELLOW #2): CONDITIONAL GO.** Signal beats random (p=0.007)
-  but on a 19-min snapshot ⇒ acquire a real dataset, re-run the profiler, then choose the shape
-  (automated-Solana / manual-ETH / stop). No Phase 3 until the real-data curve is signed off.
+- **⛔ Phase 2 GO/NO-GO (YELLOW #2): provisional NO-GO (real data, 2f).** The conditional GO was
+  acquired on a 19-fire snapshot; the real Dune cohort (n=1,763) flips it — blind −16%, signal
+  −15%, negative across all sweeps + permutation. **Decision on record:** confirm at $0 after the
+  Dune free monthly credit reset (one small clean second window), then **finalize NO-GO** and choose
+  pivot-vs-shelve (Base / longer-hold judgmental thesis / stop). No Phase 3 on this evidence. Paid
+  confirmation (Dune Plus ~$399 / CoinGecko Analyst $129) is YELLOW and was **not** chosen.
 - **⏳ IN PROGRESS — dataset (YELLOW #1).** (a) Free forward-collection — **RUNNING:**
   `autocrypt collect` (enumerate + tail swaps for a 24h-held survivorship-safe cohort), unattended
   via `nohup` → `data/collect.log`. Caveat: a `nohup` process does not survive reboot — a launchd

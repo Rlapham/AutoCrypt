@@ -50,6 +50,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+import httpx
+
 from autocrypt.logging import get_logger
 from autocrypt.providers.base import HTTPProvider, RetryableHTTPError
 from autocrypt.schema import (
@@ -84,32 +86,88 @@ _POOL_FIELDS = ("pool_address", "pool_id", "amm", "pool")
 #
 # Paste this into a new Dune query, declare `since`/`till` as TIMESTAMP parameters
 # (Dune `{{since}}` / `{{till}}`), save, and pass the resulting query_id to
-# iter_trade_rows(). Survivorship-complete by CREATION: take each market's FIRST trade as
-# the creation proxy; we keep every trade whose bought/sold mint is a known quote
-# (SOL/USDC) — the SOL+USDC-quoted universe (Project_spec §3), rugs/duds included.
+# iter_trade_rows().
+#
+# COHORT scope (revised Phase 2f): the naive "every SOL/USDC-quoted trade in [since,till)"
+# pull measured ~906k rows/HOUR live (the whole SOL/USDC flow incl. blue-chips) — infeasible
+# on the free tier and contaminated for a low-cap run-up study. Instead `since`/`till` now
+# bound a NEW-LAUNCH CREATION WINDOW: we keep only base tokens whose FIRST observed SOL/USDC
+# trade falls in [since, till), and for each we emit its first TRACK_HOURS of trades.
+# Survivorship is preserved (selection is on creation, never survival — rugs/duds included).
+# A LOOKBACK buffer before `since` excludes tokens that were already trading (cuts
+# left-censoring: a token dormant longer than the buffer then resuming can still slip in —
+# honest, documented limitation). The output columns are unchanged (the 11 EXPECTED_COLUMNS),
+# so the mappers are untouched.
+#
+# COST: Dune free bills ~72 credits per HOUR of dex_solana.trades scanned (measured live,
+# June 2026; 2,500 credits/mo). Credits scale with the SCANNED time range = LOOKBACK +
+# (till-since) + TRACK_HOURS, NOT with the (much smaller) result set. So the tracking tail is
+# kept tight: the profiler's forward-return horizons are only 30/60/120s, so 2h of per-launch
+# history is already far more than it needs. LOOKBACK=1h, TRACK_HOURS=2h here ⇒ a 1h creation
+# window scans ~4h (cheap probe); a 24h creation window (a full day of launches) scans ~27h.
 DEX_TRADES_SQL = """
+WITH bounds AS (
+  SELECT
+    TRY_CAST('{{since}}' AS TIMESTAMP) AS w_since,
+    TRY_CAST('{{till}}'  AS TIMESTAMP) AS w_till
+),
+scan AS (
+  SELECT
+    t.block_time,
+    t.block_slot,
+    t.tx_id,
+    t.trader_id,
+    t.token_bought_mint_address,
+    t.token_bought_amount,
+    t.token_sold_mint_address,
+    t.token_sold_amount,
+    t.amount_usd,
+    t.project,
+    t.project_program_id,
+    CASE
+      WHEN t.token_sold_mint_address   IN ('So11111111111111111111111111111111111111112',
+                                           'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
+        THEN t.token_bought_mint_address
+      WHEN t.token_bought_mint_address IN ('So11111111111111111111111111111111111111112',
+                                           'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
+        THEN t.token_sold_mint_address
+    END AS base_mint
+  FROM dex_solana.trades t, bounds
+  WHERE t.block_time >= bounds.w_since - INTERVAL '1' HOUR
+    AND t.block_time <  bounds.w_till  + INTERVAL '2' HOUR
+    AND (
+          t.token_bought_mint_address IN ('So11111111111111111111111111111111111111112',
+                                          'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
+       OR t.token_sold_mint_address   IN ('So11111111111111111111111111111111111111112',
+                                          'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
+        )
+),
+cohort AS (
+  SELECT base_mint, MIN(block_time) AS first_t
+  FROM scan
+  WHERE base_mint IS NOT NULL
+    AND base_mint NOT IN ('So11111111111111111111111111111111111111112',
+                          'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
+  GROUP BY base_mint
+  HAVING MIN(block_time) >= (SELECT w_since FROM bounds)
+     AND MIN(block_time) <  (SELECT w_till  FROM bounds)
+)
 SELECT
-  block_time,
-  block_slot,
-  tx_id,
-  trader_id,
-  token_bought_mint_address,
-  token_bought_amount,
-  token_sold_mint_address,
-  token_sold_amount,
-  amount_usd,
-  project,
-  project_program_id
-FROM dex_solana.trades
-WHERE block_time >= TRY_CAST('{{since}}' AS TIMESTAMP)
-  AND block_time <  TRY_CAST('{{till}}'  AS TIMESTAMP)
-  AND (
-        token_bought_mint_address IN ('So11111111111111111111111111111111111111112',
-                                      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
-     OR token_sold_mint_address   IN ('So11111111111111111111111111111111111111112',
-                                      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
-      )
-ORDER BY block_time ASC
+  s.block_time,
+  s.block_slot,
+  s.tx_id,
+  s.trader_id,
+  s.token_bought_mint_address,
+  s.token_bought_amount,
+  s.token_sold_mint_address,
+  s.token_sold_amount,
+  s.amount_usd,
+  s.project,
+  s.project_program_id
+FROM scan s
+JOIN cohort c ON s.base_mint = c.base_mint
+WHERE s.block_time <  c.first_t + INTERVAL '2' HOUR
+ORDER BY s.block_time ASC
 """.strip()
 
 
@@ -118,8 +176,15 @@ def _parse_dt(s: str) -> datetime:
 
     Dune returns UTC; a naive (offset-less) string is UTC by convention, so we attach
     UTC rather than let a naive timestamp through (the schema rejects naive, and a wrong
-    tz would corrupt the knowable_at gate)."""
+    tz would corrupt the knowable_at gate).
+
+    Dune's Execution API renders timestamps as ``'YYYY-MM-DD HH:MM:SS.mmm UTC'`` — a literal
+    ``" UTC"`` zone suffix that ``datetime.fromisoformat`` cannot parse. Verified against a
+    live ``dex_solana.trades`` pull (June 2026). Strip that suffix (the block_time is always
+    UTC) before parsing."""
     s = s.strip()
+    if s.upper().endswith(" UTC"):
+        s = s[:-4].strip()
     s = s.replace(" ", "T", 1) if " " in s and "T" not in s else s
     dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
@@ -144,6 +209,22 @@ class DuneKeyNotConfiguredError(RuntimeError):
     Dune is FREE (Community tier), so this is NOT a spend gate — it enforces that a (free)
     key has been provisioned into `.env` before any network call. The pure mappers below
     work offline without a key (for tests)."""
+
+
+class DuneCreditCapError(RuntimeError):
+    """Raised when Dune returns 402 mid-pagination — the free monthly credit/datapoint cap.
+
+    Carries how many rows were successfully yielded before the cap so the caller can report
+    a partial-but-honest pull (the rows already streamed are valid) instead of crashing.
+    Verified live (June 2026): result pagination 402s once the free allowance is exhausted."""
+
+    def __init__(self, rows_yielded: int, offset: int) -> None:
+        self.rows_yielded = rows_yielded
+        self.offset = offset
+        super().__init__(
+            f"Dune free credit cap hit after {rows_yielded} rows (offset {offset}). "
+            "The rows pulled so far are valid; shrink the window or wait for the monthly reset."
+        )
 
 
 class Dune(HTTPProvider):
@@ -197,10 +278,16 @@ class Dune(HTTPProvider):
         return resp.json()
 
     async def execute_query(
-        self, query_id: int, *, parameters: dict[str, str], performance: str = "medium"
+        self, query_id: int, *, parameters: dict[str, str], performance: str = "free"
     ) -> str:
-        """Execute a saved Dune query with parameters; return the execution_id. SPEND = $0."""
-        body = {"query_parameters": parameters, "performance": performance}
+        """Execute a saved Dune query with parameters; return the execution_id. SPEND = $0.
+
+        `performance` defaults to ``"free"`` — the only tier the free Community plan accepts
+        (``medium``/``large`` are paid and 400 with "Invalid performance tier"). Verified
+        against the live API, June 2026."""
+        body: dict[str, Any] = {"query_parameters": parameters}
+        if performance:
+            body["performance"] = performance
         result = await self._post(f"/query/{query_id}/execute", body)
         execution_id = result.get("execution_id")
         if not execution_id:
@@ -261,10 +348,16 @@ class Dune(HTTPProvider):
 
         yielded, offset = 0, 0
         while yielded < max_rows:
-            result = await self._get(
-                f"/execution/{execution_id}/results",
-                params={"limit": page_size, "offset": offset},
-            )
+            try:
+                result = await self._get(
+                    f"/execution/{execution_id}/results",
+                    params={"limit": page_size, "offset": offset},
+                )
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 402:
+                    log.warning("dune_credit_cap_hit", rows=yielded, offset=offset)
+                    raise DuneCreditCapError(yielded, offset) from e
+                raise
             rows = (result.get("result") or {}).get("rows") or []
             if not rows:
                 return

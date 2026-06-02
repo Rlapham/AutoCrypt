@@ -24,7 +24,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from autocrypt.providers.dune import _POOL_FIELDS, DEFAULT_TX_LATENCY, Dune
+from autocrypt.providers.dune import (
+    _POOL_FIELDS,
+    DEFAULT_TX_LATENCY,
+    Dune,
+    DuneCreditCapError,
+)
 from autocrypt.schema import BaseEvent
 from autocrypt.storage.store import EventStore
 
@@ -191,6 +196,7 @@ class DuneBackfillReport:
     skipped_non_quote: int  # rows with no SOL/USDC leg (dropped, not a launch trade)
     net_new_rows: int  # store delta (post event_id dedup) across all three types
     hit_max_rows: bool  # True if the client-side safety ceiling capped the pull
+    hit_credit_cap: bool = False  # True if Dune 402'd mid-pull (free monthly cap exhausted)
     notes: list[str] = field(default_factory=list)
 
 
@@ -219,30 +225,36 @@ async def run_dune_backfill(
     raw = mapped = skipped = pools = 0
     before = store.count()
     hit_max = False
+    hit_credit_cap = False
 
-    async for row in dune.iter_trade_rows(
-        query_id, since, till, page_size=page_size, max_rows=max_rows
-    ):
-        raw += 1
-        if raw >= max_rows:
-            hit_max = True
-        swap = dune.to_swap(row, run_id=run_id, latency=latency)
-        if swap is None:
-            skipped += 1
-            continue
-        mapped += 1
-        market = swap.pool_address or ""
-        if market not in seen_markets:
-            seen_markets.add(market)
-            pc = dune.to_pool_created(row, run_id=run_id, latency=latency)
-            if pc is not None:
-                batch.append(pc)
-                pools += 1
-        batch.append(swap)
-        batch.append(dune.swap_to_wallet_event(swap))
-        if len(batch) >= write_batch:
-            store.write_events(batch)
-            batch.clear()
+    try:
+        async for row in dune.iter_trade_rows(
+            query_id, since, till, page_size=page_size, max_rows=max_rows
+        ):
+            raw += 1
+            if raw >= max_rows:
+                hit_max = True
+            swap = dune.to_swap(row, run_id=run_id, latency=latency)
+            if swap is None:
+                skipped += 1
+                continue
+            mapped += 1
+            market = swap.pool_address or ""
+            if market not in seen_markets:
+                seen_markets.add(market)
+                pc = dune.to_pool_created(row, run_id=run_id, latency=latency)
+                if pc is not None:
+                    batch.append(pc)
+                    pools += 1
+            batch.append(swap)
+            batch.append(dune.swap_to_wallet_event(swap))
+            if len(batch) >= write_batch:
+                store.write_events(batch)
+                batch.clear()
+    except DuneCreditCapError:
+        # Free monthly cap hit mid-pull — the rows already streamed are valid. Persist what
+        # we have and report it honestly (a time-truncated window, NOT a complete one).
+        hit_credit_cap = True
     if batch:
         store.write_events(batch)
 
@@ -251,6 +263,13 @@ async def run_dune_backfill(
         notes.append(
             f"Hit the client-side max_rows ceiling ({max_rows}) — this is a CAP to report, "
             "not a complete window. Raise --max-rows or split the window and re-run."
+        )
+    if hit_credit_cap:
+        notes.append(
+            "Dune free credit cap (402) hit mid-pull — this window is TIME-TRUNCATED (rows "
+            "arrive block_time-ascending, so the latter part of the window is missing), NOT a "
+            "complete cohort. Shrink the window to fit under the cap, or wait for the monthly "
+            "reset / upgrade. Do not treat this as a finished backfill."
         )
     if mapped == 0 and raw > 0:
         notes.append("Streamed rows but mapped 0 swaps — validate field paths first.")
@@ -265,5 +284,6 @@ async def run_dune_backfill(
         skipped_non_quote=skipped,
         net_new_rows=store.count() - before,
         hit_max_rows=hit_max,
+        hit_credit_cap=hit_credit_cap,
         notes=notes,
     )

@@ -20,7 +20,7 @@ from autocrypt.ingestion.dune_backfill import (
     run_dune_backfill,
     validate_dune,
 )
-from autocrypt.providers.dune import SOL, USDC, Dune
+from autocrypt.providers.dune import SOL, USDC, Dune, DuneCreditCapError
 from autocrypt.storage.store import EventStore
 
 # Two markets. Market A (TOKA/USDC, raydium) has 2 trades; the EARLIER one (12:00) must
@@ -182,6 +182,43 @@ def test_backfill_writes_first_trade_as_pool_proxy(tmp_path: Any) -> None:
     ]
     assert len(a_pools) == 1
     assert a_pools[0]["block_slot"] == 100  # first trade, not the 12:01 one
+    store.close()
+
+
+class CreditCappedDune(FakeDune):
+    """Yields the first `cap` rows, then 402s mid-pull like the live free tier does."""
+
+    def __init__(self, rows: list[dict[str, Any]], cap: int) -> None:
+        super().__init__(rows)
+        self._cap = cap
+
+    async def iter_trade_rows(  # type: ignore[override]
+        self, query_id: int, since: datetime, till: datetime, **_: Any
+    ) -> AsyncIterator[dict[str, Any]]:
+        for n, r in enumerate(self._rows):
+            if n >= self._cap:
+                raise DuneCreditCapError(rows_yielded=n, offset=n)
+            yield {k.lower(): v for k, v in r.items()}
+
+
+def test_backfill_persists_partial_on_credit_cap(tmp_path: Any) -> None:
+    """A 402 mid-pull must persist the rows already streamed and flag the cap — not crash."""
+    store = EventStore(tmp_path / "t.duckdb")
+    # Cap after the 2 TOKA trades (rows 0,1) — before market B is reached.
+    rep = asyncio.run(
+        run_dune_backfill(
+            store, CreditCappedDune(ROWS, cap=2),
+            run_id="t", query_id=1,
+            since=datetime(2026, 5, 20, tzinfo=UTC),
+            till=datetime(2026, 5, 21, tzinfo=UTC),
+        )
+    )
+    assert rep.hit_credit_cap is True
+    assert rep.swaps_mapped == 2  # only the two TOKA swaps made it in
+    assert rep.pools_created == 1  # market A's proxy; market B never reached
+    assert any("402" in n for n in rep.notes)
+    # The partial rows are durably written, not lost.
+    assert store.counts_by_type().get("swap") == 2
     store.close()
 
 
