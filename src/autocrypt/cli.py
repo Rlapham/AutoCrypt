@@ -38,10 +38,10 @@ def _run_id(prefix: str) -> str:
     return f"{prefix}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
 
 
-def _store() -> EventStore:
+def _store(read_only: bool = False) -> EventStore:
     s = get_settings()
     configure_logging(s.log_level)
-    return EventStore(s.duckdb_path)
+    return EventStore(s.duckdb_path, read_only=read_only)
 
 
 @app.command()
@@ -295,21 +295,52 @@ def profile(
     horizon: float = typer.Option(60.0, help="Hold horizon in seconds (entry → exit)."),
     size_usd: float = typer.Option(250.0, help="Position size per trade (USD)."),
     min_swaps: int = typer.Option(10, help="Skip pools with fewer swaps (too thin to judge)."),
+    mode: str = typer.Option(
+        "derivative",
+        help="Signal to profile: 'derivative' (Phase-2 composite) | 'attribution' "
+        "(Phase-3 lead-weighted wallet model).",
+    ),
+    runup_pct: float = typer.Option(
+        1.0, help="Attribution only: a 'run-up' = price reaches entry*(1+this)."
+    ),
+    runup_window: float = typer.Option(
+        300.0, help="Attribution only: run-up must occur within this many seconds of entry."
+    ),
     out: str = typer.Option(
-        "docs/phase-2-profile.md", help="Markdown report output path."
+        "", help="Markdown report output path (default depends on --mode)."
     ),
 ) -> None:
-    """Phase 2 KILL-GATE: build the frequency-vs-expectancy curve over the store.
+    """Phase 2/3: build the frequency-vs-expectancy curve over the store.
 
     Point-in-time, survivorship-complete, with realistic fees + own price impact.
+    `--mode attribution` scores the wallet-attribution edge (Project_spec §2) on the same
+    harness; results are directly comparable to the derivative kill-gate curve.
     """
     from pathlib import Path
 
+    from autocrypt.attribution.wallet_book import AttributionConfig
     from autocrypt.profiler.report import build_report, render_markdown
 
-    store = _store()
+    if mode not in ("derivative", "attribution"):
+        console.print(f"[red]Unknown --mode {mode!r} (use 'derivative' or 'attribution').[/red]")
+        raise typer.Exit(2)
+    signal_field = "attr_score" if mode == "attribution" else "score"
+    attr_cfg = AttributionConfig(runup_pct=runup_pct, runup_window_s=runup_window)
+    if not out:
+        out = (
+            "docs/phase-3-attribution-profile.md"
+            if mode == "attribution"
+            else "docs/phase-2-profile.md"
+        )
+
+    store = _store(read_only=True)  # analytics-only; allows concurrent profile sweeps
     rep = build_report(
-        store, horizon_s=horizon, position_size_usd=size_usd, min_swaps=min_swaps
+        store,
+        horizon_s=horizon,
+        position_size_usd=size_usd,
+        min_swaps=min_swaps,
+        signal_field=signal_field,
+        attr_cfg=attr_cfg,
     )
     store.close()
 
@@ -317,7 +348,7 @@ def profile(
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(md)
 
-    t = Table(title=f"Profiler — horizon {horizon:.0f}s, ${size_usd:.0f}/trade")
+    t = Table(title=f"Profiler [{mode}] — horizon {horizon:.0f}s, ${size_usd:.0f}/trade")
     t.add_column("Metric", style="cyan")
     t.add_column("Value", style="green")
     t.add_row("universe pools (survivorship)", str(rep.universe_pools))

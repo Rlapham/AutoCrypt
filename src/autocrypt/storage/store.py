@@ -122,11 +122,17 @@ def event_to_row(e: BaseEvent) -> list[Any]:
 class EventStore:
     """Thin DuckDB wrapper for the canonical event store."""
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, read_only: bool = False) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.con = duckdb.connect(str(self.db_path))
-        self.con.execute(_DDL)
+        self.read_only = read_only
+        # Read-only connections allow MANY concurrent readers (DuckDB takes only a shared
+        # lock), which is what the profiler/QC analytics paths need — e.g. running several
+        # profile sweeps over one store at once. A read-only connection cannot run the DDL,
+        # and need not: the table already exists in any store we open this way.
+        self.con = duckdb.connect(str(self.db_path), read_only=read_only)
+        if not read_only:
+            self.con.execute(_DDL)
 
     def close(self) -> None:
         self.con.close()

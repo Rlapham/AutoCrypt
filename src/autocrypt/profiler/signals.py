@@ -28,7 +28,12 @@ class SignalConfig:
 
 @dataclass(slots=True)
 class SignalSnapshot:
-    """All signal components at one decision time (None ⇒ undefined, cannot fire)."""
+    """All signal components at one decision time (None ⇒ undefined, cannot fire).
+
+    Carries BOTH the derivative-composite fields and the Phase-3 wallet-attribution fields
+    (the latter default to undefined so the derivative path is unchanged when no wallet book
+    is supplied). `defined_for(field)` picks the right definedness gate per signal_field.
+    """
 
     defined: bool
     score: float  # composite (the thing profiler thresholds by default)
@@ -38,6 +43,15 @@ class SignalSnapshot:
     trade_rate_growth: float  # (recent count - older) / older
     n_recent: int
     n_older: int
+    # Phase-3 wallet-attribution (populated by the profiler when a WalletScoreBook is given)
+    attr_defined: bool = False
+    attr_score: float = float("-inf")  # buy-USD-weighted mean lift of scored recent buyers
+    attr_smart_share: float = 0.0  # share of recent buy USD from above-base-rate wallets
+    attr_n_scored_buyers: int = 0
+
+    def defined_for(self, field: str) -> bool:
+        """Definedness gate for the chosen signal_field (attribution vs derivative)."""
+        return self.attr_defined if field.startswith("attr") else self.defined
 
 
 _UNDEFINED = SignalSnapshot(

@@ -17,25 +17,33 @@ Discipline (load-bearing — see CLAUDE.md + docs/event-schema.md):
     manufacture a positive.
 """
 
-from autocrypt.profiler.execution import ExecutionModel, RoundTrip
-from autocrypt.profiler.liquidity import LiquidityEstimator
-from autocrypt.profiler.profiler import (
-    Profiler,
-    ProfilerConfig,
-    ThresholdResult,
-    profile_curve,
-)
-from autocrypt.profiler.signals import SignalConfig, SignalSnapshot, compute_signal
+from __future__ import annotations
 
-__all__ = [
-    "ExecutionModel",
-    "LiquidityEstimator",
-    "Profiler",
-    "ProfilerConfig",
-    "RoundTrip",
-    "SignalConfig",
-    "SignalSnapshot",
-    "ThresholdResult",
-    "compute_signal",
-    "profile_curve",
-]
+import importlib
+
+# Lazy (PEP 562) re-exports. Eagerly importing `profiler.profiler` here would make merely
+# importing a leaf like `profiler.dataset` pull in the whole profiler → attribution chain,
+# creating a package-level import cycle (attribution depends on profiler.dataset). Lazy
+# attribute access keeps the convenience API (`from autocrypt.profiler import Profiler`)
+# while letting leaf modules be imported without triggering the cycle.
+_LAZY = {
+    "ExecutionModel": "autocrypt.profiler.execution",
+    "RoundTrip": "autocrypt.profiler.execution",
+    "LiquidityEstimator": "autocrypt.profiler.liquidity",
+    "Profiler": "autocrypt.profiler.profiler",
+    "ProfilerConfig": "autocrypt.profiler.profiler",
+    "ThresholdResult": "autocrypt.profiler.profiler",
+    "profile_curve": "autocrypt.profiler.profiler",
+    "SignalConfig": "autocrypt.profiler.signals",
+    "SignalSnapshot": "autocrypt.profiler.signals",
+    "compute_signal": "autocrypt.profiler.signals",
+}
+
+__all__ = list(_LAZY)
+
+
+def __getattr__(name: str) -> object:
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(module), name)

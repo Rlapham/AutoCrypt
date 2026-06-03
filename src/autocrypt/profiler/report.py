@@ -12,6 +12,8 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
+from autocrypt.attribution.signal import AttributionSignalConfig
+from autocrypt.attribution.wallet_book import AttributionConfig, WalletScoreBook
 from autocrypt.profiler.dataset import load_pools
 from autocrypt.profiler.profiler import (
     Profiler,
@@ -47,6 +49,8 @@ class ProfileReport:
     meta: dict[str, float]
     signal_quantiles: dict[str, float]
     significance: list[SignificancePoint]
+    signal_field: str = "score"  # "score" (derivative) | "attr_score" (attribution)
+    book_meta: dict[str, float] = None  # type: ignore[assignment]  # attribution book stats
 
 
 def _quantiles_from(vals: list[float]) -> tuple[list[float], dict[str, float]]:
@@ -95,13 +99,49 @@ def build_report(
     horizon_s: float = 60.0,
     position_size_usd: float = 250.0,
     min_swaps: int = 10,
+    signal_field: str = "score",
+    attr_cfg: AttributionConfig | None = None,
 ) -> ProfileReport:
+    """Build the frequency-vs-expectancy report for the chosen signal.
+
+    `signal_field="score"` profiles the derivative composite (the Phase-2 kill-gate);
+    `signal_field="attr_score"` profiles the Phase-3 wallet-attribution signal on the SAME
+    harness (costs, censoring, depth/horizon/rug sweeps, permutation test). In attribution
+    mode a `WalletScoreBook` is built once from the FULL universe (min_swaps=1, so wallet
+    track records use every entry) while trades are still scored on the min_swaps universe.
+    """
     pools = load_pools(store, min_swaps=min_swaps)
 
-    base_cfg = ProfilerConfig(horizon_s=horizon_s, position_size_usd=position_size_usd)
+    book: WalletScoreBook | None = None
+    book_meta: dict[str, float] = {}
+    sig_cfg = AttributionSignalConfig(attribution=attr_cfg or AttributionConfig())
+    if signal_field.startswith("attr"):
+        full_pools = load_pools(store, min_swaps=1)  # maximal wallet history
+        book = WalletScoreBook.build(full_pools, sig_cfg.attribution)
+        base = book.base_rate_at(float("inf"))  # final population rate (report only)
+        book_meta = {
+            "book_pools": float(len(full_pools)),
+            "book_wallets": float(book.n_wallets),
+            "book_attempts": float(book.n_attempts),
+            "book_final_base_rate": base,
+            "runup_pct_x100": sig_cfg.attribution.runup_pct * 100.0,
+        }
+
+    def _profiler(cfg: ProfilerConfig) -> Profiler:
+        return Profiler(cfg, book=book)
+
+    def _cfg(**kw: object) -> ProfilerConfig:
+        params: dict[str, object] = {
+            "horizon_s": horizon_s,
+            "position_size_usd": position_size_usd,
+            "signal_field": signal_field,
+            "attribution": sig_cfg,
+        }
+        params.update(kw)  # caller overrides (horizon_s / depth_multiplier / use_rug_filter)
+        return ProfilerConfig(**params)  # type: ignore[arg-type]
 
     # Single point-in-time pass: all downstream curve points filter these trades.
-    scored, censored, minutes, used = Profiler(base_cfg).run(pools)
+    scored, censored, minutes, used = _profiler(_cfg()).run(pools)
     thresholds, qs = _quantiles_from([t.signal_value for t in scored])
 
     blind = summarize_threshold(NEG_INF, scored, censored, minutes)
@@ -119,28 +159,18 @@ def build_report(
     # Horizon sweep (blind expectancy at each horizon).
     horizon_sweep: dict[float, ThresholdResult] = {}
     for h in (30.0, 60.0, 120.0):
-        scored, censored, minutes, _ = Profiler(
-            ProfilerConfig(horizon_s=h, position_size_usd=position_size_usd)
-        ).run(pools)
-        horizon_sweep[h] = summarize_threshold(NEG_INF, scored, censored, minutes)
+        s, c, m, _ = _profiler(_cfg(horizon_s=h)).run(pools)
+        horizon_sweep[h] = summarize_threshold(NEG_INF, s, c, m)
 
     # Depth-sensitivity sweep (blind expectancy at each depth multiplier).
     depth_sweep: dict[float, ThresholdResult] = {}
     for dm in (0.5, 1.0, 2.0):
-        scored, censored, minutes, _ = Profiler(
-            ProfilerConfig(
-                horizon_s=horizon_s, position_size_usd=position_size_usd, depth_multiplier=dm
-            )
-        ).run(pools)
-        depth_sweep[dm] = summarize_threshold(NEG_INF, scored, censored, minutes)
+        s, c, m, _ = _profiler(_cfg(depth_multiplier=dm)).run(pools)
+        depth_sweep[dm] = summarize_threshold(NEG_INF, s, c, m)
 
     # Rug gate OFF (blind), to show how the gate changes the firing universe.
-    scored, censored, minutes, _ = Profiler(
-        ProfilerConfig(
-            horizon_s=horizon_s, position_size_usd=position_size_usd, use_rug_filter=False
-        )
-    ).run(pools)
-    rug_off_blind = summarize_threshold(NEG_INF, scored, censored, minutes)
+    s, c, m, _ = _profiler(_cfg(use_rug_filter=False)).run(pools)
+    rug_off_blind = summarize_threshold(NEG_INF, s, c, m)
 
     return ProfileReport(
         universe_pools=len(pools),
@@ -153,6 +183,8 @@ def build_report(
         meta=meta,
         signal_quantiles=qs,
         significance=significance,
+        signal_field=signal_field,
+        book_meta=book_meta,
     )
 
 
@@ -161,8 +193,19 @@ def _pct(x: float) -> str:
 
 
 def render_markdown(rep: ProfileReport, horizon_s: float, position_size_usd: float) -> str:
+    is_attr = rep.signal_field.startswith("attr")
     L: list[str] = []
-    L.append("# Phase 2 — Frequency-vs-Expectancy Profile (KILL-GATE output)\n")
+    if is_attr:
+        L.append("# Phase 3 — Wallet-Attribution Signal Profile (on the kill-gate harness)\n")
+        L.append(
+            "Profiles the **lead-weighted wallet-attribution** signal (Project_spec §2 — the "
+            "claimed *defensible edge*) on the exact same survivorship-complete, point-in-time "
+            "profiler as the Phase-2 derivative kill-gate, so the two are directly comparable. "
+            "The signal fires when wallets with a **demonstrated historical lead on run-ups** "
+            "(scored only from trials resolved before the decision) are buying the pool now.\n"
+        )
+    else:
+        L.append("# Phase 2 — Frequency-vs-Expectancy Profile (KILL-GATE output)\n")
     L.append(
         f"- Universe (survivorship-complete, created pools w/ swaps): **{rep.universe_pools}** "
         f"pools; used (enough history): **{rep.pools_used}**\n"
@@ -172,6 +215,17 @@ def render_markdown(rep: ProfileReport, horizon_s: float, position_size_usd: flo
         f"scored fires (blind): **{int(rep.meta.get('total_scored_fires_at_min_threshold', 0))}**, "
         f"censored: **{int(rep.meta.get('total_censored_at_min_threshold', 0))}**\n"
     )
+    if is_attr and rep.book_meta:
+        bm = rep.book_meta
+        L.append(
+            f"- Attribution book: **{int(bm.get('book_wallets', 0)):,}** wallets / "
+            f"**{int(bm.get('book_attempts', 0)):,}** resolved entry-trials over "
+            f"**{int(bm.get('book_pools', 0)):,}** pools; final population lead rate "
+            f"**{bm.get('book_final_base_rate', 0) * 100:.1f}%** (run-up = "
+            f"+{int(rep.book_meta.get('runup_pct_x100', 100))}% within window). 'blind' here = "
+            f"fire whenever the attribution signal is *defined* (>=1 recent buyer with track "
+            f"record), so it already conditions on smart-money presence.\n"
+        )
 
     def row(r: ThresholdResult) -> str:
         thr = "blind" if r.threshold == NEG_INF else f"{r.threshold:.3f}"
@@ -226,7 +280,8 @@ def render_markdown(rep: ProfileReport, horizon_s: float, position_size_usd: flo
         for s in rep.significance:
             L.append(f"| {s.threshold:.3f} | {s.n} | {_pct(s.mean_net)} | {s.p_value:.3f} |")
 
-    L.append("\n## Signal-value distribution (composite score)\n")
+    dist_label = "attribution lift" if is_attr else "composite score"
+    L.append(f"\n## Signal-value distribution ({dist_label})\n")
     L.append("| quantile | " + " | ".join(rep.signal_quantiles.keys()) + " |")
     L.append("|---|" + "---|" * len(rep.signal_quantiles))
     L.append("| value | " + " | ".join(f"{v:.3f}" for v in rep.signal_quantiles.values()) + " |")

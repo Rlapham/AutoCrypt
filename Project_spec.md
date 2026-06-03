@@ -6,8 +6,30 @@
 
 ## Current status
 
-- **Phase:** 2 (signal-frequency & expectancy profiler — THE KILL-GATE) — **profiler RE-RUN ON REAL
-  DATA; the conditional-GO FLIPPED to a provisional NO-GO.** Latest session (Phase 2f): the operator's
+- **Phase:** 2/3 (KILL-GATE) — **NO-GO now STRONGER: the claimed wallet-attribution edge was BUILT
+  and tested on real data and ALSO loses badly.** Latest session (Phase 3): rather than idle a month
+  waiting on the Dune free-credit reset, the operator chose to build the rest of the architecture and
+  validate the plan on the data in hand. Built the **lead-weighted wallet-attribution model**
+  (`src/autocrypt/attribution/`) — the project's *actual claimed defensible edge* (§2), which the
+  kill-gate had never tested — and ran it on the same survivorship-complete, point-in-time,
+  cost-realistic profiler (`autocrypt profile --mode attribution`). Result on the real cohort
+  (**995 fires / 262 pools**): **blind −28.1%, best-threshold −27.3%, permutation p=0.117 (n.s.)**;
+  and **tightening the signal toward "smarter" money makes returns monotonically WORSE (→ −82%)** —
+  it anti-predicts (the manufactured-pump / exit-liquidity failure mode of §2, now shown on-chain).
+  **The decisive cause is structural and signal-independent: mean no-cost 60s drift ≈ 0%**, so
+  ~20–28% round-trip costs on thin fresh-launch pools guarantee a loss for ANY entry signal.
+  Negative across run-up defs (+50/+100/+200%), depth (×0.5–×2), horizon (30/120s), rug on/off.
+  **Architecture/plan validated end-to-end (63 tests green, ruff clean); the EDGE is negative on this
+  data.** Honest limit unchanged: ONE ~1h creation window; in-window wallet histories are short.
+  **✅ YELLOW DECISION RESOLVED (2026-06-03): the operator chose to SHELVE the automated short-hold
+  Solana strategy.** Kill-gate is closed NO-GO; no Phase 4–6, no live capital, no pivot build started.
+  The attribution model + profiler harness are retained for a possible future longer-horizon thesis
+  or the $0 Dune-reset confirmation, but no further work is committed. No money spent. See
+  `docs/phase-3-synthesis.md` + `docs/phase-3-attribution-dune.md`.
+  *Prior (Phase 2g, 2026-06-02):* credit-reset timing check — not reset (day 0); see
+  `docs/phase-2g-synthesis.md`.
+  *Prior (Phase 2f):* the conditional-GO on the derivative composite FLIPPED to a provisional NO-GO
+  on real data (blind −16%, signal −15%, n=1,763). The operator's
   Dune key + saved cohort query (`query_id 7637616`) arrived; the real-data backfill + profiler ran.
   On the real cohort (**616 pools, n=1,763 fires @60s**): **blind −15.99%, best-threshold signal
   −15.16%** (still a loss), signal gets *worse* as you tighten it, and it's **negative across every
@@ -20,6 +42,11 @@
   new-launch cohort. **57/57 tests green, ruff clean.** **Decision on record: confirm at $0 after the
   Dune monthly credit reset** (one small clean second window), then finalize NO-GO. **No Phase 3.**
   See `docs/phase-2f-synthesis.md` + `docs/phase-2-profile-dune.md`.
+  *Phase 2g (2026-06-02): credit-reset timing check — NOT reset (no-op).* Key created
+  ~2026-06-02 = **day 0** of the billing cycle; free allowance still exhausted from 2f. Operator
+  elected to skip the probe (a 402 was near-certain) and wait. **Next confirmation run timed to
+  ~2026-07-02** (operator to confirm billing-cycle reset day). Nothing changed: no code, no data,
+  no spend; 2f state stands verbatim. See `docs/phase-2g-synthesis.md`.
   *Prior (Phase 2e):* built the runnable Dune ingestion path (`dune-validate` / `dune-backfill` +
   `ingestion/dune_backfill.py`); was blocked on the operator key. See `docs/phase-2e-synthesis.md`.
   *Prior (Phase 2d):* verified provider access before depending — Flipside free self-signup
@@ -133,19 +160,29 @@ Parallel **research/backtest track + feedback loop:** survivorship-proof, point-
   sweep — the snapshot's conditional GO was n=19 noise ⇒ **provisional NO-GO** for automated
   short-hold Solana. Confirm with one free second window post-reset, then finalize and choose
   automated-Solana(dead) / Base / longer-hold-judgmental / stop. No Phase 3 on this evidence.
-- **Phase 3 — Signal & wallet-attribution model.** (Only if Phase 2 passes.) Build/validate the lead-weighted attribution model and the composite scorer against the backtester.
+- **Phase 3 — Signal & wallet-attribution model.** ◐ **Brought forward as architecture validation
+  (the operator's call) rather than as a post-GO build.** The lead-weighted attribution model is
+  BUILT (`src/autocrypt/attribution/`) and validated end-to-end against the kill-gate backtester —
+  but on the real cohort it **LOSES (−28% blind, anti-predictive at the high end, p=0.117 n.s.)**, so
+  this does **not** constitute a Phase-2 pass. The model/harness are reusable for any future pivot
+  (Base / longer-hold) or for the $0 confirmation window. See `docs/phase-3-synthesis.md`.
 - **Phase 4 — Paper trading on live data.** Forward-test: confirm the live signal matches the backtest. Divergence ⇒ hunt the look-ahead bug. Still no real funds.
 - **Phase 5 — Execution + risk/guardrail layer + kill switches.** Build the brakes (circuit breakers, kill switch, custody plan) **before** the engine touches money. Everything here is built and tested in simulation/paper. Going live is RED.
 - **Phase 6 — Small live capital → monitored scale-up → decay monitoring.** Heavily human-gated (RED transitions). Start tiny, watch realized-vs-backtest via the feedback loop, retire strategies that decay.
 
 ## 8. Open questions / forks for the human (decide when reached)
 
-- **⛔ Phase 2 GO/NO-GO (YELLOW #2): provisional NO-GO (real data, 2f).** The conditional GO was
-  acquired on a 19-fire snapshot; the real Dune cohort (n=1,763) flips it — blind −16%, signal
-  −15%, negative across all sweeps + permutation. **Decision on record:** confirm at $0 after the
-  Dune free monthly credit reset (one small clean second window), then **finalize NO-GO** and choose
-  pivot-vs-shelve (Base / longer-hold judgmental thesis / stop). No Phase 3 on this evidence. Paid
-  confirmation (Dune Plus ~$399 / CoinGecko Analyst $129) is YELLOW and was **not** chosen.
+- **⛔ Phase 2/3 GO/NO-GO (YELLOW #2): NO-GO, now strengthened (real data, 2f + Phase 3).** The
+  conditional GO came from a 19-fire snapshot; the real Dune cohort flips it on BOTH signals tested:
+  the **derivative composite** (n=1,763, −16%) and the **wallet-attribution edge** (n=995, −28%
+  blind, monotonically worse as you select for "smarter" money, p=0.117 n.s.). Decisive cause is
+  **structural: ≈0% no-cost short-hold drift vs ~20–28% costs** — signal-independent. **✅ RESOLVED
+  (2026-06-03): the operator chose to SHELVE automated short-hold Solana.** Kill-gate closed NO-GO.
+  Pivots considered and not taken now: Base (higher fees; our finding is drift/cost not label
+  quality), longer-hold/judgmental (root-cause-addressing but a different, unbuilt, barely-autonomous
+  strategy needing new long-horizon data). A $0 representativeness confirmation after the Dune reset
+  (~2026-07-02) remains available but is optional given two structural negatives. Paid confirmation
+  (Dune Plus ~$399 / CoinGecko Analyst $129) was **not** chosen.
 - **⏳ IN PROGRESS — dataset (YELLOW #1).** (a) Free forward-collection — **RUNNING:**
   `autocrypt collect` (enumerate + tail swaps for a 24h-held survivorship-safe cohort), unattended
   via `nohup` → `data/collect.log`. Caveat: a `nohup` process does not survive reboot — a launchd

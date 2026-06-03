@@ -20,8 +20,10 @@ Discipline recap:
 from __future__ import annotations
 
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
+from autocrypt.attribution.signal import AttributionSignalConfig, compute_attribution
+from autocrypt.attribution.wallet_book import WalletScoreBook
 from autocrypt.profiler.dataset import PoolData, SwapRow
 from autocrypt.profiler.execution import ExecutionModel
 from autocrypt.profiler.liquidity import LiquidityEstimator
@@ -40,6 +42,7 @@ class ProfilerConfig:
     use_rug_filter: bool = True
     depth_multiplier: float = 1.0  # sensitivity knob on the (estimated) depth
     signal_field: str = "score"  # which SignalSnapshot field to threshold
+    attribution: AttributionSignalConfig = field(default_factory=AttributionSignalConfig)
 
 
 @dataclass(slots=True)
@@ -118,8 +121,11 @@ class Profiler:
     than re-simulated per threshold.
     """
 
-    def __init__(self, cfg: ProfilerConfig) -> None:
+    def __init__(self, cfg: ProfilerConfig, book: WalletScoreBook | None = None) -> None:
         self.cfg = cfg
+        # Cross-pool wallet track records for the attribution signal. None ⇒ derivative-only
+        # (the original behaviour); attribution signal_fields require a book to be defined.
+        self.book = book
 
     def _sol_usd(self, swaps: list[SwapRow]) -> float | None:
         ratios = [s.amount_usd / s.quote_amount for s in swaps if s.quote_amount > 0]
@@ -176,13 +182,35 @@ class Profiler:
         censored: list[Trade] = []
         next_allowed_ts = eligible_start  # cooldown gate
 
+        # Every signal consumer (compute_signal, compute_attribution, rug_check) only ever
+        # reads swaps within its own lookback of the decision time, so we pass a bounded TAIL
+        # slice [lo:i+1] covering the widest window rather than all of history. This is exactly
+        # equivalent (each consumer re-filters by knowable_at) but turns the per-pool decision
+        # loop from O(n²) into O(n·window) — decisive on the few very deep pools.
+        max_window = max(
+            self.cfg.signal.lookback_s,
+            self.cfg.rug.lookback_s,
+            self.cfg.attribution.attr_window_s,
+        )
+        lo = 0
         for i, s in enumerate(swaps):
             t = s.knowable_at
+            while swaps[lo].knowable_at < t - max_window:
+                lo += 1
             if t < eligible_start or t < next_allowed_ts:
                 continue
-            visible = swaps[: i + 1]  # knowable_at <= t by construction (sorted)
+            visible = swaps[lo : i + 1]  # covers [t - max_window, t]; knowable_at <= t
             sig = compute_signal(visible, t, self.cfg.signal)
-            if not sig.defined:
+            if self.book is not None:
+                attr = compute_attribution(visible, t, self.book, self.cfg.attribution)
+                sig = replace(
+                    sig,
+                    attr_defined=attr.defined,
+                    attr_score=attr.score if attr.defined else float("-inf"),
+                    attr_smart_share=attr.smart_share,
+                    attr_n_scored_buyers=attr.n_scored_buyers,
+                )
+            if not sig.defined_for(self.cfg.signal_field):
                 continue
             sig_val = float(getattr(sig, self.cfg.signal_field))
 
