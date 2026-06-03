@@ -6,17 +6,30 @@
 
 ## Current status
 
-- **NOW: ITERATION 2 (pivot) — planning done, building next.** Iteration 1 is a **conclusive,
-  shelved NO-GO** for automated short-hold low-cap Solana (both signals lose; cause is structural:
-  ≈0% short-hold drift vs ~20–28% costs). We have **pivoted to Iteration 2**, which reuses the
-  verdict machine on edges that escape that cost wall, via **two concurrent tracks**:
-  **Track M (mid-cap deep-pool momentum/mean-reversion) — IMMEDIATE & PARALLEL** (testable now on
-  free data we already ingest; a fast cheap read + a control on our signal quality), and
-  **Track G (graduation-momentum + days-horizon "accumulator" cohort) — THE MAIN GOAL** (higher
-  ceiling, maximal tool reuse, gated on a multi-day dataset that must start accruing now). Same
-  kill-gate bar and honesty discipline as Iteration 1. Full strategy + phase plan:
-  **`docs/iteration-2-strategy.md`** (required reading). Next session = Phase **M1** (survivorship-safe
-  mid-cap universe + free OHLCV ingest) while kicking off **G0** durable long-horizon collection.
+- **NOW: ITERATION 2 — M1 done; blocked on a USABLE mid-cap universe (M1b next).** Iteration 1 is
+  a **conclusive, shelved NO-GO** for automated short-hold low-cap Solana (both signals lose; cause
+  is structural: ≈0% short-hold drift vs ~20–28% costs). **Iteration 2** reuses the verdict machine
+  via two concurrent tracks: **Track M (mid-cap deep-pool, immediate)** and **Track G (graduation
+  accumulator, the main goal)**. Full plan: **`docs/iteration-2-strategy.md`**.
+  - **M1 (2026-06-03) — survivorship risk resolved + a second structural finding.** Verified live:
+    a **survivorship-safe point-in-time mid-cap universe is NOT free** — GeckoTerminal exposes only
+    *today's* top ~200 pools (no as-of param) + ~6mo daily / ~41d hourly OHLCV for *survivors*;
+    backtesting today's top-N is the survivorship trap. **Operator YELLOW resolved:** free
+    survivorship-**BIASED** control + start forward snapshots, **no paid pull** (bias only inflates →
+    a biased backtest can only NO-GO/“unproven”, never a false GO). **Band signed off:** reserve_in_usd
+    ≥ $500k AND FDV ∈ [$1M,$250M]. **BUT** that band yields **n=1** from the free top-pools endpoint —
+    Solana liquidity is **barbelled** (majors deep, rest thin), so volume-ranked top-pools is the
+    *wrong enumeration source* for mid-caps. Built `src/autocrypt/midcap/` (parse + band + forward
+    snapshot + biased-control ingest) + CLI `midcap-snapshot`/`midcap-control` + 4 tests (**67/67
+    green, ruff clean**). Forward snapshot #1 taken (clean series started); biased control not
+    meaningfully run at n=1. See **`docs/phase-M1-synthesis.md`**.
+  - **M1b (next session) — get a usable universe:** mcap-ranked enumeration (CoinGecko `/coins/markets`
+    → Solana mint → deepest GeckoTerminal pool → depth filter), inverting the funnel. If still too few,
+    YELLOW fork: loosen depth (reserve ≥ $100k, n~6) vs paid survivorship-complete history.
+  - **G0 (done, with caveat):** the old nohup collector was **dead**; rebuilt durable (launchd) but
+    **macOS TCC blocks it** (repo under `~/Documents`). Operator chose **interim nohup** (running,
+    accruing to `data/autocrypt_graduation.duckdb`) — **dies on reboot**; durable fix = grant Full
+    Disk Access to `uv` or relocate the repo. A second nohup takes daily Track-M universe snapshots.
   *Everything below is Iteration-1 history, retained for context.*
 
 - **Phase:** 2/3 (KILL-GATE) — **NO-GO now STRONGER: the claimed wallet-attribution edge was BUILT
@@ -165,14 +178,18 @@ Thesis: escape Iteration 1's two structural laws (cost wall; smart-money inversi
 survivorship-complete ∧ beats-blind+random ∧ robust ∧ enough-fires (strategy doc §3).
 
 - **Track M (Option 2) — Mid-cap deep-pool momentum/mean-reversion. IMMEDIATE & PARALLEL.**
-  - **M1** — survivorship-safe point-in-time mid-cap universe + free OHLCV ingest (⚠️ resolve the
-    historical-universe survivorship risk *first*; verify free-tier access before depending). ☐
+  - **M1** — survivorship-safe point-in-time mid-cap universe + free OHLCV ingest. ◐ **Risk
+    resolved (survivorship-safe universe is NOT free → biased-control+forward-snapshot path chosen);
+    band signed off (reserve ≥ $500k ∧ FDV $1M–$250M); machinery built+tested.** BLOCKED on a usable
+    universe — free top-pools is barbelled (n=1 in-band). **M1b = mcap-ranked enumeration.**
   - **M2** — deep-pool cost recalibration (confirm cost drag is now low single digits). ☐
   - **M3** — signal battery (TS/XS momentum, mean-reversion, breakout) + **KILL-GATE**. ☐
   - **M4** — (GO only) out-of-sample robustness + capacity. ☐
 - **Track G (Option 1) — Graduation-momentum + days-horizon accumulator cohort. THE MAIN GOAL.**
-  - **G0** — start durable long-horizon collection NOW (launchd/cron) + graduation-event detection
-    (data is the long pole — accrues while Track M runs). ☐
+  - **G0** — start durable long-horizon collection NOW (launchd/cron) + graduation-event detection. ◐
+    **Collection RUNNING (interim nohup → `autocrypt_graduation.duckdb`, 7-day hold); durable launchd
+    form built but blocked by macOS TCC (grant FDA to `uv` or relocate repo). Graduation-event
+    *detection* still TODO (derivable from the raw multi-day store).**
   - **G1** — re-labelled "accumulator" attribution (success = survives+appreciates over N days). ☐
   - **G2** — graduation-momentum **KILL-GATE** (+ orchestrator-fade overlay). ☐
   - **G3** — (GO only) attribution model proper + robustness. ☐

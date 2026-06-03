@@ -41,6 +41,17 @@ class GeckoTerminal(HTTPProvider):
         data = await self.get_json(f"/networks/{self.network}/new_pools", params={"page": page})
         return data.get("data", []) if isinstance(data, dict) else []
 
+    async def top_pools_raw(self, page: int = 1) -> list[dict[str, Any]]:
+        """The current top pools by the API's default ranking (liquidity/volume).
+
+        SURVIVORSHIP NOTE: this is a *current* snapshot of pools that still exist and
+        rank today. It is NOT point-in-time universe membership — a pool that was liquid
+        months ago but has since died/delisted is absent. Use only for a clearly-labelled
+        survivorship-BIASED control, or snapshot it forward over wall-clock to build a
+        clean point-in-time set. The endpoint caps at ~10 pages (≈200 pools)."""
+        data = await self.get_json(f"/networks/{self.network}/pools", params={"page": page})
+        return data.get("data", []) if isinstance(data, dict) else []
+
     async def pool_ohlcv_raw(
         self, pool_address: str, interval: str = "1h", limit: int = 1000
     ) -> list[list[Any]]:

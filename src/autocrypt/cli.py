@@ -520,5 +520,63 @@ async def _with_aclose(provider: object, coro: object) -> object:
             await aclose()
 
 
+# ── Track M (Iteration 2) — mid-cap deep-pool universe ────────────────────────
+
+
+@app.command(name="midcap-snapshot")
+def midcap_snapshot(
+    min_reserve_usd: float = typer.Option(500_000.0, help="Min pool reserve (liquidity) USD."),
+    fdv_min_usd: float = typer.Option(1_000_000.0, help="Min FDV USD (exclude micro-caps)."),
+    fdv_max_usd: float = typer.Option(250_000_000.0, help="Max FDV USD (exclude majors)."),
+    max_pages: int = typer.Option(10, help="Top-pool pages to enumerate (caps ~10/200 pools)."),
+) -> None:
+    """Take ONE forward universe snapshot (survivorship-safe over wall-clock).
+
+    Records ALL enumerated top pools (in_band flagged) into `universe_snapshots`, so a
+    point-in-time membership set accrues — a pool captured while alive stays in the
+    snapshot after it later dies. Schedule this daily to ripen a clean Track M dataset.
+    """
+    from autocrypt.midcap.universe import UniverseBand, snapshot_universe
+
+    band = UniverseBand(min_reserve_usd=min_reserve_usd, fdv_min_usd=fdv_min_usd, fdv_max_usd=fdv_max_usd)
+    store = _store()
+    n_all, n_band = asyncio.run(snapshot_universe(store, band, max_pages=max_pages))
+    store.close()
+    console.print(
+        f"universe snapshot: enumerated {n_all} pools, {n_band} in-band "
+        f"(reserve>=${min_reserve_usd:,.0f}, FDV ${fdv_min_usd:,.0f}-${fdv_max_usd:,.0f})"
+    )
+
+
+@app.command(name="midcap-control")
+def midcap_control(
+    min_reserve_usd: float = typer.Option(500_000.0, help="Min pool reserve (liquidity) USD."),
+    fdv_min_usd: float = typer.Option(1_000_000.0, help="Min FDV USD."),
+    fdv_max_usd: float = typer.Option(250_000_000.0, help="Max FDV USD."),
+    interval: str = typer.Option("1d", help="OHLCV interval (1d ~6mo depth, 1h ~41d)."),
+    max_pages: int = typer.Option(10, help="Top-pool pages to enumerate."),
+) -> None:
+    """Ingest today's in-band pools' OHLCV — an EXPLICITLY survivorship-BIASED control.
+
+    ⚠️ NOT A GO TEST. The universe is today's survivors, so any positive expectancy could
+    be pure survivorship. A NEGATIVE result is the trustworthy one (bias only inflates
+    returns). Point DB_URL at a dedicated file, e.g.
+    DB_URL=duckdb:///data/autocrypt_midcap.duckdb autocrypt midcap-control
+    """
+    from autocrypt.midcap.universe import UniverseBand, build_control_dataset
+
+    band = UniverseBand(min_reserve_usd=min_reserve_usd, fdv_min_usd=fdv_min_usd, fdv_max_usd=fdv_max_usd)
+    store = _store()
+    run_id = _run_id("midcap_control_BIASED")
+    n_pools, n_bars = asyncio.run(
+        build_control_dataset(store, band, run_id=run_id, interval=interval, max_pages=max_pages)
+    )
+    store.close()
+    console.print(
+        f"[yellow]BIASED control[/yellow]: ingested {n_bars} {interval} bars across "
+        f"{n_pools} in-band pools ({run_id}). Survivorship-biased upper bound — never a GO."
+    )
+
+
 if __name__ == "__main__":
     app()
