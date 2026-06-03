@@ -60,7 +60,9 @@ If a task seems to require a RED action, **stop and write out exactly what you w
 
 ## 5. Required reading
 - `Project_spec.md` (authoritative state)
-- Latest `docs/phase-*-synthesis.md`
+- **`docs/iteration-2-strategy.md` — the CURRENT strategy & phase plan (Iteration 2: Track M mid-cap
+  deep-pool, parallel; Track G graduation/accumulator, main goal). Iteration 1 is a closed NO-GO.**
+- Latest `docs/*-synthesis.md`
 - From Phase 2 on (the data layer is now load-bearing):
   - `docs/event-schema.md` — the signed-off canonical schema + the no-look-ahead three-time
     discipline (`event_time` / `knowable_at` / `observed_at`). Code: `src/autocrypt/schema/`.

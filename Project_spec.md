@@ -6,6 +6,19 @@
 
 ## Current status
 
+- **NOW: ITERATION 2 (pivot) — planning done, building next.** Iteration 1 is a **conclusive,
+  shelved NO-GO** for automated short-hold low-cap Solana (both signals lose; cause is structural:
+  ≈0% short-hold drift vs ~20–28% costs). We have **pivoted to Iteration 2**, which reuses the
+  verdict machine on edges that escape that cost wall, via **two concurrent tracks**:
+  **Track M (mid-cap deep-pool momentum/mean-reversion) — IMMEDIATE & PARALLEL** (testable now on
+  free data we already ingest; a fast cheap read + a control on our signal quality), and
+  **Track G (graduation-momentum + days-horizon "accumulator" cohort) — THE MAIN GOAL** (higher
+  ceiling, maximal tool reuse, gated on a multi-day dataset that must start accruing now). Same
+  kill-gate bar and honesty discipline as Iteration 1. Full strategy + phase plan:
+  **`docs/iteration-2-strategy.md`** (required reading). Next session = Phase **M1** (survivorship-safe
+  mid-cap universe + free OHLCV ingest) while kicking off **G0** durable long-horizon collection.
+  *Everything below is Iteration-1 history, retained for context.*
+
 - **Phase:** 2/3 (KILL-GATE) — **NO-GO now STRONGER: the claimed wallet-attribution edge was BUILT
   and tested on real data and ALSO loses badly.** Latest session (Phase 3): rather than idle a month
   waiting on the Dune free-credit reset, the operator chose to build the rest of the architecture and
@@ -144,6 +157,31 @@ Parallel **research/backtest track + feedback loop:** survivorship-proof, point-
 - **Backtesting/framework reference:** Jesse is notable for **zero-look-ahead** backtesting design; Freqtrade/CCXT are the broader ecosystem. We will likely build a bespoke Solana on-chain backtester since these are CEX/price-series oriented.
 
 ## 7. Phase plan (one phase per session; see CLAUDE.md §2 for workflow)
+
+### Iteration 2 (CURRENT) — two concurrent tracks (detail: `docs/iteration-2-strategy.md`)
+
+Thesis: escape Iteration 1's two structural laws (cost wall; smart-money inversion) by trading
+**deep-pool / longer-horizon**. Shared kill-gate bar = profitable-after-costs ∧ point-in-time ∧
+survivorship-complete ∧ beats-blind+random ∧ robust ∧ enough-fires (strategy doc §3).
+
+- **Track M (Option 2) — Mid-cap deep-pool momentum/mean-reversion. IMMEDIATE & PARALLEL.**
+  - **M1** — survivorship-safe point-in-time mid-cap universe + free OHLCV ingest (⚠️ resolve the
+    historical-universe survivorship risk *first*; verify free-tier access before depending). ☐
+  - **M2** — deep-pool cost recalibration (confirm cost drag is now low single digits). ☐
+  - **M3** — signal battery (TS/XS momentum, mean-reversion, breakout) + **KILL-GATE**. ☐
+  - **M4** — (GO only) out-of-sample robustness + capacity. ☐
+- **Track G (Option 1) — Graduation-momentum + days-horizon accumulator cohort. THE MAIN GOAL.**
+  - **G0** — start durable long-horizon collection NOW (launchd/cron) + graduation-event detection
+    (data is the long pole — accrues while Track M runs). ☐
+  - **G1** — re-labelled "accumulator" attribution (success = survives+appreciates over N days). ☐
+  - **G2** — graduation-momentum **KILL-GATE** (+ orchestrator-fade overlay). ☐
+  - **G3** — (GO only) attribution model proper + robustness. ☐
+- **Cross-cutting** — Direction 3: reuse the Iteration-1 orchestrator detector as a rug/avoid gate
+  for both tracks.
+- **Shared downstream** (only a GO track reaches these; carried over verbatim from Iteration 1):
+  Paper trading → Execution + risk/kill-switches (brakes before engine) → small live capital (RED).
+
+### Iteration 1 (CLOSED — conclusive NO-GO, shelved) — retained for history
 
 - **Phase 0 — Scaffolding / context handoff.** ✅ Done (this repo).
 - **Phase 1 — Data ingestion + historical backfill (Solana), read-only.** ✅ **Done.** Built: env-only-secrets Python/uv scaffold; canonical point-in-time event schema (7 types, 3-time `event_time`/`knowable_at`/`observed_at` discipline, signed off); read-only DexPaprika + GeckoTerminal adapters (free tiers, no paid spend); DuckDB store with a `knowable_at` replay gate + Parquet export; stream/poll/backfill ingestion; `autocrypt qc` data-quality checks; data dictionary. *Deliverable met:* a populated point-in-time store (~47.2k events) + a live read-only feed. *Caveat:* coverage is the freshest launches, not a full 14 days — full history needs forward-collection or paid Bitquery (Phase 2). Schema + decisions: `docs/event-schema.md`, `docs/provider-evaluation.md`, `docs/data-dictionary.md`, `docs/phase-1-synthesis.md`.
