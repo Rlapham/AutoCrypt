@@ -32,7 +32,7 @@ _INTERVALS: dict[str, tuple[str, str, int]] = {
 
 class GeckoTerminal(HTTPProvider):
     base_url = "https://api.geckoterminal.com/api/v2"
-    per_minute = 18.0  # docs say 30/min but the OHLCV path 429s near that; stay well under
+    per_minute = 12.0  # docs say 30/min but OHLCV + token-pools paths 429 well under; stay low
     source = Source.geckoterminal
     network = "solana"
 
@@ -50,6 +50,19 @@ class GeckoTerminal(HTTPProvider):
         survivorship-BIASED control, or snapshot it forward over wall-clock to build a
         clean point-in-time set. The endpoint caps at ~10 pages (≈200 pools)."""
         data = await self.get_json(f"/networks/{self.network}/pools", params={"page": page})
+        return data.get("data", []) if isinstance(data, dict) else []
+
+    async def token_pools_raw(self, mint: str, page: int = 1) -> list[dict[str, Any]]:
+        """The pools that trade a given token mint, ranked by the API default.
+
+        This is the mid-cap funnel's depth-resolution step (M1b): given a market-cap-ranked
+        mint from CoinGecko, list its pools so the caller can take the DEEPEST one and apply
+        the reserve filter. Unlike `top_pools_raw`, enumeration here is driven by the mint
+        set (mcap rank), so it is not subject to the barbelled volume-ranked top-200 bias.
+        Same parsed-row shape as `top_pools_raw` (use `midcap.universe.parse_pool`)."""
+        data = await self.get_json(
+            f"/networks/{self.network}/tokens/{mint}/pools", params={"page": page}
+        )
         return data.get("data", []) if isinstance(data, dict) else []
 
     async def pool_ohlcv_raw(

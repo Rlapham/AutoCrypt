@@ -141,13 +141,24 @@ CREATE TABLE IF NOT EXISTS universe_snapshots (
 
 
 def write_snapshot(
-    store: EventStore, rows: list[PoolRow], band: UniverseBand, *, snapshot_at: datetime
+    store: EventStore,
+    rows: list[PoolRow],
+    band: UniverseBand,
+    *,
+    snapshot_at: datetime,
+    source: str = "geckoterminal",
 ) -> int:
     """Append one universe snapshot to the midcap store.
 
     ALL enumerated pools are recorded (with `in_band` flagged), not just in-band ones —
     that is what makes the forward series survivorship-safe: a pool captured here while
     alive remains in this snapshot even after it later dies/delists.
+
+    `source` tags the enumeration path ('geckoterminal' = volume-ranked top-pools;
+    'coingecko_mcap_ranked' = the M1b mcap-ranked funnel). The mcap funnel substitutes
+    CoinGecko's authoritative token-level FDV into each PoolRow.fdv_usd before calling
+    here, so `band.contains` is correct even for SOL-quoted pools (whose GeckoTerminal
+    FDV would otherwise be the quote asset's).
     """
     con = store.con  # reuse the store's single DuckDB connection
     con.execute(_SNAPSHOT_DDL)
@@ -164,17 +175,54 @@ def write_snapshot(
             r.h24_volume_usd,
             r.pool_created_at,
             band.contains(r),
+            source,
         )
         for r in rows
     ]
     con.executemany(
         "INSERT OR REPLACE INTO universe_snapshots "
         "(snapshot_at, pool_address, name, base_mint, quote_mint, reserve_usd, fdv_usd, "
-        " mcap_usd, h24_volume_usd, pool_created_at, in_band) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " mcap_usd, h24_volume_usd, pool_created_at, in_band, source) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         payload,
     )
     return len(payload)
+
+
+def load_in_band_pools(store: EventStore, *, source: str = "coingecko_mcap_ranked") -> list[PoolRow]:
+    """Read the LATEST snapshot's in-band pools for a source as PoolRows.
+
+    Lets the control OHLCV ingest reuse an already-resolved universe (e.g. the expensive
+    M1b mcap-ranked funnel) instead of re-enumerating from scratch.
+    """
+    con = store.con
+    con.execute(_SNAPSHOT_DDL)
+    latest = con.execute(
+        "SELECT max(snapshot_at) FROM universe_snapshots WHERE source = ?", [source]
+    ).fetchone()
+    if not latest or latest[0] is None:
+        return []
+    rows = con.execute(
+        "SELECT pool_address, name, base_mint, quote_mint, reserve_usd, fdv_usd, mcap_usd, "
+        "       pool_created_at, h24_volume_usd "
+        "FROM universe_snapshots WHERE source = ? AND snapshot_at = ? AND in_band "
+        "ORDER BY reserve_usd DESC",
+        [source, latest[0]],
+    ).fetchall()
+    return [
+        PoolRow(
+            pool_address=r[0],
+            name=r[1] or "",
+            base_mint=r[2],
+            quote_mint=r[3],
+            reserve_usd=r[4],
+            fdv_usd=r[5],
+            mcap_usd=r[6],
+            pool_created_at=r[7],
+            h24_volume_usd=r[8],
+        )
+        for r in rows
+    ]
 
 
 async def snapshot_universe(
@@ -194,6 +242,44 @@ async def snapshot_universe(
 
 
 # ── Biased control dataset (immediate, explicitly survivorship-biased) ────────
+
+
+async def build_control_from_pools(
+    store: EventStore,
+    pools: list[PoolRow],
+    *,
+    run_id: str,
+    interval: str = "1d",
+    ohlcv_limit: int = 1000,
+    latency: timedelta = timedelta(seconds=2),
+) -> tuple[int, int]:
+    """Ingest OHLCV for an already-resolved pool list (e.g. the M1b mcap-ranked universe).
+
+    Returns (n_pools, n_bars_written). Same EXPLICITLY survivorship-BIASED caveat as
+    `build_control_dataset` — a NEGATIVE result is the trustworthy one; never a GO.
+    """
+    gt = GeckoTerminal()
+    bars_written = 0
+    try:
+        for r in pools:
+            batch = []
+            async for bar in gt.iter_pool_ohlcv(
+                r.pool_address,
+                base_mint=r.base_mint,
+                quote_mint=r.quote_mint,
+                interval=interval,
+                run_id=run_id,
+                limit=ohlcv_limit,
+                latency=latency,
+            ):
+                batch.append(bar)
+            if batch:
+                store.write_events(batch)
+                bars_written += len(batch)
+            log.info("control_ohlcv", pool=r.name[:24], bars=len(batch))
+    finally:
+        await gt.aclose()
+    return len(pools), bars_written
 
 
 async def build_control_dataset(

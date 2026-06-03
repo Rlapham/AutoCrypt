@@ -68,6 +68,7 @@ class Source(str, Enum):
 
     dexpaprika = "dexpaprika"
     geckoterminal = "geckoterminal"
+    coingecko = "coingecko"
     bitquery = "bitquery"
     flipside = "flipside"
     dune = "dune"

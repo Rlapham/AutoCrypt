@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from autocrypt.midcap.universe import (
     PoolRow,
     UniverseBand,
+    load_in_band_pools,
     parse_pool,
     write_snapshot,
 )
@@ -89,4 +90,25 @@ def test_write_snapshot_records_all_with_in_band_flag(tmp_path):
         ).fetchall()
     )
     assert got == {"IN": True, "OUT": False}
+    store.close()
+
+
+def test_load_in_band_pools_returns_only_latest_in_band(tmp_path):
+    store = EventStore(tmp_path / "midcap.duckdb")
+    band = UniverseBand()
+    # an older snapshot (should be ignored) and a newer one for the same source
+    old = parse_pool(_raw(addr="OLD", reserve="750000", fdv="50000000"))
+    write_snapshot(
+        store, [old], band, snapshot_at=datetime(2026, 6, 1, tzinfo=UTC),
+        source="coingecko_mcap_ranked",
+    )
+    new_in = parse_pool(_raw(addr="NEW_IN", reserve="900000", fdv="50000000"))
+    new_out = parse_pool(_raw(addr="NEW_OUT", reserve="100", fdv="50000000"))
+    write_snapshot(
+        store, [new_in, new_out], band, snapshot_at=datetime(2026, 6, 3, tzinfo=UTC),
+        source="coingecko_mcap_ranked",
+    )
+    pools = load_in_band_pools(store, source="coingecko_mcap_ranked")
+    assert [p.pool_address for p in pools] == ["NEW_IN"]  # latest snapshot, in-band only
+    assert load_in_band_pools(store, source="nonexistent") == []
     store.close()

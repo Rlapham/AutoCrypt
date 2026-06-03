@@ -578,5 +578,101 @@ def midcap_control(
     )
 
 
+@app.command(name="midcap-enumerate")
+def midcap_enumerate(
+    min_reserve_usd: float = typer.Option(500_000.0, help="Min pool reserve (liquidity) USD."),
+    fdv_min_usd: float = typer.Option(1_000_000.0, help="Min FDV USD (exclude micro-caps)."),
+    fdv_max_usd: float = typer.Option(250_000_000.0, help="Max FDV USD (exclude majors)."),
+    max_pages: int = typer.Option(12, help="CoinGecko /coins/markets pages (250/page)."),
+    control: bool = typer.Option(
+        False, help="Also ingest OHLCV for the in-band pools (BIASED control)."
+    ),
+    interval: str = typer.Option("1d", help="Control OHLCV interval (1d ~6mo, 1h ~41d)."),
+) -> None:
+    """M1b — build the mid-cap universe by MARKET-CAP RANK (the inverted funnel).
+
+    CoinGecko mcap-rank (FDV band) → Solana mint → GeckoTerminal deepest pool → depth
+    filter. Fixes M1's barbelled-top-pools problem (n=1) and M1's SOL-quoted-pool FDV
+    confusion (FDV is taken authoritatively from CoinGecko). Writes a 'coingecko_mcap_ranked'
+    universe snapshot. Point DB_URL at the dedicated file:
+    DB_URL=duckdb:///data/autocrypt_midcap.duckdb autocrypt midcap-enumerate
+
+    ⚠️ Still survivorship-BIASED (current snapshot only) — a NEGATIVE control is trustworthy,
+    a positive one is an upper bound, never a GO.
+    """
+    from autocrypt.midcap.mcap_rank import build_midcap_universe
+    from autocrypt.midcap.universe import UniverseBand, build_control_from_pools
+
+    s = get_settings()
+    cg_key = s.coingecko_api_key.get_secret_value() if s.coingecko_api_key else None
+    band = UniverseBand(
+        min_reserve_usd=min_reserve_usd, fdv_min_usd=fdv_min_usd, fdv_max_usd=fdv_max_usd
+    )
+    store = _store()
+    n_cand, n_pool, n_band, in_band_rows = asyncio.run(
+        build_midcap_universe(store, band, cg_api_key=cg_key, max_pages=max_pages)
+    )
+    console.print(
+        f"mcap-ranked funnel: {n_cand} FDV-in-band candidates → {n_pool} with a pool → "
+        f"[bold]{n_band} in-band[/bold] (reserve>=${min_reserve_usd:,.0f}, "
+        f"FDV ${fdv_min_usd:,.0f}-${fdv_max_usd:,.0f})"
+    )
+    t = Table(title="In-band mid-cap pools")
+    t.add_column("symbol", style="cyan")
+    t.add_column("reserve $", style="green", justify="right")
+    t.add_column("FDV $", style="green", justify="right")
+    t.add_column("pool", style="dim")
+    for r in sorted(in_band_rows, key=lambda r: -(r.reserve_usd or 0)):
+        t.add_row(
+            r.name[:24],
+            f"{r.reserve_usd:,.0f}" if r.reserve_usd else "—",
+            f"{r.fdv_usd:,.0f}" if r.fdv_usd else "—",
+            r.pool_address[:8],
+        )
+    console.print(t)
+    if control and in_band_rows:
+        run_id = _run_id("midcap_mcap_control_BIASED")
+        n_pools, n_bars = asyncio.run(
+            build_control_from_pools(store, in_band_rows, run_id=run_id, interval=interval)
+        )
+        console.print(
+            f"[yellow]BIASED control[/yellow]: ingested {n_bars} {interval} bars across "
+            f"{n_pools} pools ({run_id}). Survivorship-biased upper bound — never a GO."
+        )
+    store.close()
+
+
+@app.command(name="midcap-control-snapshot")
+def midcap_control_snapshot(
+    source: str = typer.Option("coingecko_mcap_ranked", help="Snapshot source to ingest."),
+    interval: str = typer.Option("1d", help="OHLCV interval (1d ~6mo depth, 1h ~41d)."),
+) -> None:
+    """Ingest BIASED-control OHLCV for the in-band pools of the LATEST stored snapshot.
+
+    Reuses an already-resolved universe (e.g. the expensive M1b mcap-ranked funnel) instead
+    of re-enumerating. Point DB_URL at the dedicated midcap file:
+    DB_URL=duckdb:///data/autocrypt_midcap.duckdb autocrypt midcap-control-snapshot
+
+    ⚠️ Survivorship-BIASED upper bound — a NEGATIVE result is trustworthy, never a GO.
+    """
+    from autocrypt.midcap.universe import build_control_from_pools, load_in_band_pools
+
+    store = _store()
+    pools = load_in_band_pools(store, source=source)
+    if not pools:
+        console.print(f"[yellow]no in-band pools for source '{source}'[/yellow] — run midcap-enumerate first")
+        store.close()
+        raise typer.Exit(1)
+    run_id = _run_id("midcap_snapshot_control_BIASED")
+    n_pools, n_bars = asyncio.run(
+        build_control_from_pools(store, pools, run_id=run_id, interval=interval)
+    )
+    store.close()
+    console.print(
+        f"[yellow]BIASED control[/yellow]: ingested {n_bars} {interval} bars across "
+        f"{n_pools} in-band pools from '{source}' ({run_id}). Upper bound — never a GO."
+    )
+
+
 if __name__ == "__main__":
     app()

@@ -6,11 +6,27 @@
 
 ## Current status
 
-- **NOW: ITERATION 2 — M1 done; blocked on a USABLE mid-cap universe (M1b next).** Iteration 1 is
-  a **conclusive, shelved NO-GO** for automated short-hold low-cap Solana (both signals lose; cause
-  is structural: ≈0% short-hold drift vs ~20–28% costs). **Iteration 2** reuses the verdict machine
-  via two concurrent tracks: **Track M (mid-cap deep-pool, immediate)** and **Track G (graduation
-  accumulator, the main goal)**. Full plan: **`docs/iteration-2-strategy.md`**.
+- **NOW: ITERATION 2 — M1b done (usable mid-cap universe built); M2 next (cost recalibration).**
+  Iteration 1 is a **conclusive, shelved NO-GO** for automated short-hold low-cap Solana (both
+  signals lose; cause is structural: ≈0% short-hold drift vs ~20–28% costs). **Iteration 2** reuses
+  the verdict machine via two concurrent tracks: **Track M (mid-cap deep-pool, immediate)** and
+  **Track G (graduation accumulator, the main goal)**. Full plan: **`docs/iteration-2-strategy.md`**.
+  - **M1b (2026-06-03) — the universe blocker is RESOLVED, free.** The mcap-ranked **inverted
+    funnel** (CoinGecko `/coins/markets` Solana-ecosystem, FDV band → `/coins/list` id→Solana-mint →
+    GeckoTerminal deepest pool → reserve ≥ $500k) yields **n=113 in-band** mid-cap deep-pool names
+    (vs M1's n=1): 786 FDV-in-band candidates → 627 with a pool → 113 in-band (16 ≥ $5M reserve,
+    45 ≥ $2M, 72 ≥ $1M). FDV is taken authoritatively from CoinGecko (fixes M1's SOL-quoted-pool
+    FDV confusion). **No paid pull needed → the YELLOW depth-vs-paid fork is moot.** Biased-control
+    OHLCV ingested: **16,177 daily bars / 113 pools / ~6mo depth, `qc`-clean (no look-ahead)** in
+    `data/autocrypt_midcap.duckdb` (snapshot `source='coingecko_mcap_ranked'`). Still
+    survivorship-BIASED → can only NO-GO/"unproven", never a GO. Built `providers/coingecko.py`,
+    `GeckoTerminal.token_pools_raw`, `midcap/mcap_rank.py`, `load_in_band_pools` /
+    `build_control_from_pools`, CLI `midcap-enumerate` + `midcap-control-snapshot`. Two live bugs
+    caught+fixed (keyless CoinGecko 429 → graceful partial; GeckoTerminal 404 → no-pool, was
+    crashing the run). **74/74 tests green, ruff clean.** See **`docs/phase-M1b-synthesis.md`**.
+  - **M2 (next session) — deep-pool cost recalibration.** Adapt the profiler's execution-cost model
+    to mid-cap OHLCV + reserve depth; confirm round-trip cost drag is now **low single digits**
+    (Iteration-1 Law 1 escaped) BEFORE trusting any expectancy. If still large, stop and re-scope.
   - **M1 (2026-06-03) — survivorship risk resolved + a second structural finding.** Verified live:
     a **survivorship-safe point-in-time mid-cap universe is NOT free** — GeckoTerminal exposes only
     *today's* top ~200 pools (no as-of param) + ~6mo daily / ~41d hourly OHLCV for *survivors*;
@@ -23,9 +39,10 @@
     snapshot + biased-control ingest) + CLI `midcap-snapshot`/`midcap-control` + 4 tests (**67/67
     green, ruff clean**). Forward snapshot #1 taken (clean series started); biased control not
     meaningfully run at n=1. See **`docs/phase-M1-synthesis.md`**.
-  - **M1b (next session) — get a usable universe:** mcap-ranked enumeration (CoinGecko `/coins/markets`
-    → Solana mint → deepest GeckoTerminal pool → depth filter), inverting the funnel. If still too few,
-    YELLOW fork: loosen depth (reserve ≥ $100k, n~6) vs paid survivorship-complete history.
+  - **M1b (done 2026-06-03) — usable universe achieved (n=113, free).** mcap-ranked enumeration
+    (CoinGecko `/coins/markets` → Solana mint → deepest GeckoTerminal pool → depth filter), the
+    inverted funnel. Yielded 113 in-band names at the signed-off band — the YELLOW loosen-vs-pay
+    fork was not needed. See the M1b bullet above + `docs/phase-M1b-synthesis.md`.
   - **G0 (done, with caveat):** the old nohup collector was **dead**; rebuilt durable (launchd) but
     **macOS TCC blocks it** (repo under `~/Documents`). Operator chose **interim nohup** (running,
     accruing to `data/autocrypt_graduation.duckdb`) — **dies on reboot**; durable fix = grant Full
@@ -178,11 +195,14 @@ Thesis: escape Iteration 1's two structural laws (cost wall; smart-money inversi
 survivorship-complete ∧ beats-blind+random ∧ robust ∧ enough-fires (strategy doc §3).
 
 - **Track M (Option 2) — Mid-cap deep-pool momentum/mean-reversion. IMMEDIATE & PARALLEL.**
-  - **M1** — survivorship-safe point-in-time mid-cap universe + free OHLCV ingest. ◐ **Risk
-    resolved (survivorship-safe universe is NOT free → biased-control+forward-snapshot path chosen);
-    band signed off (reserve ≥ $500k ∧ FDV $1M–$250M); machinery built+tested.** BLOCKED on a usable
-    universe — free top-pools is barbelled (n=1 in-band). **M1b = mcap-ranked enumeration.**
-  - **M2** — deep-pool cost recalibration (confirm cost drag is now low single digits). ☐
+  - **M1** — survivorship-safe point-in-time mid-cap universe + free OHLCV ingest. ✅ **Done.**
+    Risk resolved (survivorship-safe universe is NOT free → biased-control+forward-snapshot path);
+    band signed off (reserve ≥ $500k ∧ FDV $1M–$250M); machinery built+tested.
+  - **M1b** — mcap-ranked inverted funnel to get a USABLE universe. ✅ **Done (2026-06-03):**
+    n=113 in-band names (free, no paid pull); biased-control OHLCV ingested (16,177 1d bars / 113
+    pools / ~6mo, qc-clean). See `docs/phase-M1b-synthesis.md`.
+  - **M2** — deep-pool cost recalibration (confirm cost drag is now low single digits). ☐ **NEXT.**
+    Adapt the profiler cost model to mid-cap OHLCV + reserve depth; confirm Law 1 is escaped.
   - **M3** — signal battery (TS/XS momentum, mean-reversion, breakout) + **KILL-GATE**. ☐
   - **M4** — (GO only) out-of-sample robustness + capacity. ☐
 - **Track G (Option 1) — Graduation-momentum + days-horizon accumulator cohort. THE MAIN GOAL.**
