@@ -674,5 +674,93 @@ def midcap_control_snapshot(
     )
 
 
+@app.command(name="midcap-costs")
+def midcap_costs(
+    source: str = typer.Option("coingecko_mcap_ranked", help="Universe snapshot source."),
+    fee_bps: float = typer.Option(30.0, help="Swap fee per leg, bps (mid-cap DEX ~25-30)."),
+    fixed_cost_usd: float = typer.Option(0.20, help="Priority fee + Jito tip per leg, USD."),
+    speculative_only: bool = typer.Option(
+        False, help="Exclude pegged/pegged pairs (LST-SOL, stable-stable, wrapped)."
+    ),
+) -> None:
+    """M2 — deep-pool cost recalibration: is Iteration-1's Law 1 (the cost wall) escaped?
+
+    Reuses the kill-gate's constant-product cost engine but feeds depth DIRECTLY from each
+    pool's reserve_in_usd (vs Iteration 1 inferring it from thin-pool swap impact). Reports
+    round-trip friction AT FLAT PRICE (pure execution cost, like-for-like with Iteration 1's
+    ~20-28%) across position sizes, plus fee/depth sweeps. Read-only; no signal, no GO.
+    DB_URL=duckdb:///data/autocrypt_midcap.duckdb autocrypt midcap-costs
+    """
+    from autocrypt.midcap.costs import CostParams, recalibrate_costs, summarize_frictions
+
+    sizes = [100.0, 500.0, 1_000.0, 5_000.0, 10_000.0, 50_000.0]
+    base = CostParams(fee_bps=fee_bps, fixed_cost_usd=fixed_cost_usd)
+    store = _store(read_only=True)
+    rep = recalibrate_costs(
+        store, source=source, sizes_usd=sizes, params=base, speculative_only=speculative_only
+    )
+    if not rep.pools:
+        console.print(f"[yellow]no in-band pools for source '{source}'[/yellow]")
+        store.close()
+        raise typer.Exit(1)
+
+    depths = sorted((p.reserve_usd for p in rep.pools), reverse=True)
+    console.print(
+        f"[bold]M2 cost recalibration[/bold] — {rep.n_pools} pools "
+        f"({rep.n_speculative} speculative), source='{source}', {base.label}\n"
+        f"reserve_usd: max ${depths[0]:,.0f}  median ${depths[len(depths) // 2]:,.0f}  "
+        f"min ${depths[-1]:,.0f}"
+    )
+
+    t = Table(title="Round-trip friction at flat price (pure execution cost) by position size")
+    t.add_column("size $", justify="right", style="cyan")
+    for col in ("median", "p25", "p75", "p90", "worst", "<3%", "<5%"):
+        t.add_column(col, justify="right")
+    for s in rep.summaries:
+        t.add_row(
+            f"{s.size_usd:,.0f}",
+            f"{s.median:.2%}",
+            f"{s.p25:.2%}",
+            f"{s.p75:.2%}",
+            f"{s.p90:.2%}",
+            f"{s.worst:.1%}",
+            f"{s.frac_under_3pct:.0%}",
+            f"{s.frac_under_5pct:.0%}",
+        )
+    console.print(t)
+
+    # Fee + depth sensitivity at a representative $1,000 position (median friction).
+    rep_size = 1_000.0
+    sweep = Table(title=f"Sensitivity — median friction @ ${rep_size:,.0f}")
+    sweep.add_column("scenario", style="cyan")
+    sweep.add_column("median", justify="right")
+    sweep.add_column("p90", justify="right")
+    for label, pr in (
+        ("fee 25bps", CostParams(fee_bps=25.0, fixed_cost_usd=fixed_cost_usd)),
+        ("fee 30bps (base)", base),
+        ("fee 100bps (pump.fun)", CostParams(fee_bps=100.0, fixed_cost_usd=fixed_cost_usd)),
+        ("depth x0.5 (shallower)", CostParams(fee_bps=fee_bps, fixed_cost_usd=fixed_cost_usd, depth_mult=0.5)),
+        ("depth x2 (deeper)", CostParams(fee_bps=fee_bps, fixed_cost_usd=fixed_cost_usd, depth_mult=2.0)),
+    ):
+        r2 = recalibrate_costs(
+            store, source=source, sizes_usd=[rep_size], params=pr, speculative_only=speculative_only
+        )
+        s2 = summarize_frictions(r2.pools, [rep_size])[0]
+        sweep.add_row(label, f"{s2.median:.2%}", f"{s2.p90:.2%}")
+    console.print(sweep)
+
+    # Volatility context: typical multi-day move vs friction (Law 1 = gross > cost).
+    moves = sorted(p.typical_abs_move_h for p in rep.pools if p.typical_abs_move_h is not None)
+    if moves:
+        med_move = moves[len(moves) // 2]
+        base_med = next(s.median for s in rep.summaries if s.size_usd == rep_size)
+        console.print(
+            f"context: median |{rep.move_horizon}-day move| = {med_move:.1%} vs "
+            f"${rep_size:,.0f} round-trip friction {base_med:.2%} "
+            f"(ratio ~{med_move / base_med:.0f}x) — NOT an expectancy; just the playing field."
+        )
+    store.close()
+
+
 if __name__ == "__main__":
     app()

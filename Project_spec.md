@@ -6,7 +6,7 @@
 
 ## Current status
 
-- **NOW: ITERATION 2 — M1b done (usable mid-cap universe built); M2 next (cost recalibration).**
+- **NOW: ITERATION 2 — M2 done & PASSED (Law 1 cost wall escaped); M3 next (signal battery + kill-gate).**
   Iteration 1 is a **conclusive, shelved NO-GO** for automated short-hold low-cap Solana (both
   signals lose; cause is structural: ≈0% short-hold drift vs ~20–28% costs). **Iteration 2** reuses
   the verdict machine via two concurrent tracks: **Track M (mid-cap deep-pool, immediate)** and
@@ -24,9 +24,24 @@
     `build_control_from_pools`, CLI `midcap-enumerate` + `midcap-control-snapshot`. Two live bugs
     caught+fixed (keyless CoinGecko 429 → graceful partial; GeckoTerminal 404 → no-pool, was
     crashing the run). **74/74 tests green, ruff clean.** See **`docs/phase-M1b-synthesis.md`**.
-  - **M2 (next session) — deep-pool cost recalibration.** Adapt the profiler's execution-cost model
-    to mid-cap OHLCV + reserve depth; confirm round-trip cost drag is now **low single digits**
-    (Iteration-1 Law 1 escaped) BEFORE trusting any expectancy. If still large, stop and re-scope.
+  - **M2 (2026-06-03) — deep-pool cost recalibration: PASS, Law 1 escaped.** Reused the SAME
+    constant-product `ExecutionModel` (fees + own impact, both legs) but fed depth **directly from
+    `reserve_in_usd`** (median in-band $1.44M) instead of inferring it from thin-pool swaps.
+    Headline = **round-trip friction at flat price** (pure execution cost — the exact like-for-like
+    with Iteration-1's 20-28%): **~0.8-0.9% median at $100-$1k positions, 100% of the 113 pools
+    under 3%.** Robust to pump.fun 100bps fee (2.3%), depth x0.5 (1.19%), and dropping the 6
+    pegged/pegged pairs (unchanged). Sanity anchor: the engine reproduces 17.2% on an Iteration-1-
+    like $20k pool — model identical, pools just deep. The one real constraint is **capacity**, not
+    a wall: per-position notional should scale with depth (~<=0.4% of reserve keeps friction ~1%;
+    $10k+ only on the deeper half, $50k too big for the median pool). NOT an expectancy/GO — costs
+    only (survivorship is irrelevant to a cost measurement). Built `src/autocrypt/midcap/costs.py`
+    + CLI `midcap-costs` + 9 tests. **83/83 green, ruff clean.** See `docs/phase-M2-cost-profile.md`
+    + `docs/phase-M2-synthesis.md`.
+  - **M3 (next session) — signal battery + KILL-GATE.** First build an OHLCV-bar adapter for the
+    profiler (midcap store has only `ohlcv_bar`, no swaps), feeding daily closes + `reserve_usd`
+    depth into the M2 cost model at a realistic per-pool size. Then run TS/XS momentum,
+    mean-reversion, breakout through the full §3 kill-gate on the speculative-only subset. Biased
+    control → NO-GO/"unproven" at best, never a GO.
   - **M1 (2026-06-03) — survivorship risk resolved + a second structural finding.** Verified live:
     a **survivorship-safe point-in-time mid-cap universe is NOT free** — GeckoTerminal exposes only
     *today's* top ~200 pools (no as-of param) + ~6mo daily / ~41d hourly OHLCV for *survivors*;
@@ -201,9 +216,13 @@ survivorship-complete ∧ beats-blind+random ∧ robust ∧ enough-fires (strate
   - **M1b** — mcap-ranked inverted funnel to get a USABLE universe. ✅ **Done (2026-06-03):**
     n=113 in-band names (free, no paid pull); biased-control OHLCV ingested (16,177 1d bars / 113
     pools / ~6mo, qc-clean). See `docs/phase-M1b-synthesis.md`.
-  - **M2** — deep-pool cost recalibration (confirm cost drag is now low single digits). ☐ **NEXT.**
-    Adapt the profiler cost model to mid-cap OHLCV + reserve depth; confirm Law 1 is escaped.
-  - **M3** — signal battery (TS/XS momentum, mean-reversion, breakout) + **KILL-GATE**. ☐
+  - **M2** — deep-pool cost recalibration. ✅ **Done & PASSED (2026-06-03):** Law 1 escaped —
+    flat-price round-trip friction ~0.8-0.9% median at $100-$1k (100% of 113 pools < 3%), vs
+    Iteration-1's 20-28%; robust across fee/depth sweeps + speculative-only. Constraint is capacity
+    (size ~ pool depth), not a wall. `costs.py` + CLI `midcap-costs` + 9 tests. See
+    `docs/phase-M2-cost-profile.md`.
+  - **M3** — signal battery (TS/XS momentum, mean-reversion, breakout) + **KILL-GATE**. ☐ **NEXT.**
+    First build an OHLCV-bar profiler adapter (store has only `ohlcv_bar`); run on speculative-only.
   - **M4** — (GO only) out-of-sample robustness + capacity. ☐
 - **Track G (Option 1) — Graduation-momentum + days-horizon accumulator cohort. THE MAIN GOAL.**
   - **G0** — start durable long-horizon collection NOW (launchd/cron) + graduation-event detection. ◐
