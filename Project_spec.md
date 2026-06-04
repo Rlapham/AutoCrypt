@@ -6,7 +6,9 @@
 
 ## Current status
 
-- **NOW: ITERATION 2 — M2 done & PASSED (Law 1 cost wall escaped); M3 next (signal battery + kill-gate).**
+- **NOW: ITERATION 2 — M3 done: Track M daily signal battery is a NO-GO (kill-gate closed). YELLOW
+  fork open: pivot to Track G (main goal). Track M's forward snapshot keeps accruing for an
+  unbiased re-test.**
   Iteration 1 is a **conclusive, shelved NO-GO** for automated short-hold low-cap Solana (both
   signals lose; cause is structural: ≈0% short-hold drift vs ~20–28% costs). **Iteration 2** reuses
   the verdict machine via two concurrent tracks: **Track M (mid-cap deep-pool, immediate)** and
@@ -37,11 +39,27 @@
     only (survivorship is irrelevant to a cost measurement). Built `src/autocrypt/midcap/costs.py`
     + CLI `midcap-costs` + 9 tests. **83/83 green, ruff clean.** See `docs/phase-M2-cost-profile.md`
     + `docs/phase-M2-synthesis.md`.
-  - **M3 (next session) — signal battery + KILL-GATE.** First build an OHLCV-bar adapter for the
-    profiler (midcap store has only `ohlcv_bar`, no swaps), feeding daily closes + `reserve_usd`
-    depth into the M2 cost model at a realistic per-pool size. Then run TS/XS momentum,
-    mean-reversion, breakout through the full §3 kill-gate on the speculative-only subset. Biased
-    control → NO-GO/"unproven" at best, never a GO.
+  - **M3 (2026-06-03) — signal battery + KILL-GATE: NO-GO on all four signals.** Built the
+    OHLCV-bar adapter (`midcap/bars.py`), the transparent battery (`midcap/barsignals.py`: TS
+    momentum, XS momentum, mean-reversion, volume-gated breakout — long-only, point-in-time),
+    and a day-native kill-gate engine (`midcap/killgate.py`) that reuses the M2 `ExecutionModel`
+    verbatim, capacity-scales size to ≤0.4% of reserve, and runs the frequency-vs-expectancy
+    curve + seeded permutation test + robustness sweeps (horizon/depth/lookback/early-vs-late).
+    On the 92-pool speculative-only biased control (~2,855 fires/signal): **every signal is a
+    NO-GO.** None beats random after a multiple-comparison discount (best discounted p=0.22,
+    mean_rev); blind expectancy is slightly negative (−0.3% to −0.8%) because realistic
+    capacity-scaled **cost drag ~2% ≥ the ~1.3% survivorship-inflated 5-day marked drift** — Law
+    1's `gross > cost` still isn't met at tradeable size. The tempting tight-threshold tails
+    (mean_rev +11%, n=143) are artifacts: **negative median**, tiny n, regime-fragile (early half
+    negative), depth-fragile (depth×0.5 → −2%). The failure does NOT lean on survivorship — the
+    gate closed on its own statistics first. CLI `midcap-killgate` + 14 tests. **97/97 green,
+    ruff clean.** See `docs/phase-M3-killgate.md` + `docs/phase-M3-synthesis.md`. **YELLOW fork
+    open (operator): close Track M's daily price-only battery (recommended) and pivot to Track G
+    — the main goal — letting the survivorship-safe forward snapshot accrue for an unbiased
+    re-test; do NOT tune the battery to a positive.**
+  - **M3-precursor note:** the NO-GO is specifically about *daily, price-only* signals on a
+    biased control. It does not test intraday resolution or richer features (liquidity velocity,
+    holder flow), which this OHLCV-only universe can't see.
   - **M1 (2026-06-03) — survivorship risk resolved + a second structural finding.** Verified live:
     a **survivorship-safe point-in-time mid-cap universe is NOT free** — GeckoTerminal exposes only
     *today's* top ~200 pools (no as-of param) + ~6mo daily / ~41d hourly OHLCV for *survivors*;
@@ -221,9 +239,13 @@ survivorship-complete ∧ beats-blind+random ∧ robust ∧ enough-fires (strate
     Iteration-1's 20-28%; robust across fee/depth sweeps + speculative-only. Constraint is capacity
     (size ~ pool depth), not a wall. `costs.py` + CLI `midcap-costs` + 9 tests. See
     `docs/phase-M2-cost-profile.md`.
-  - **M3** — signal battery (TS/XS momentum, mean-reversion, breakout) + **KILL-GATE**. ☐ **NEXT.**
-    First build an OHLCV-bar profiler adapter (store has only `ohlcv_bar`); run on speculative-only.
-  - **M4** — (GO only) out-of-sample robustness + capacity. ☐
+  - **M3** — signal battery (TS/XS momentum, mean-reversion, breakout) + **KILL-GATE**. ✅ **Done
+    (2026-06-03): NO-GO.** All four signals fail on the biased daily-OHLCV control — none beats
+    random after a multiple-comparison discount; blind expectancy slightly negative (cost ~2% ≥
+    ~1.3% inflated drift); positive tails are survivorship artifacts (negative median, tiny n,
+    regime-/depth-fragile). Built `midcap/{bars,barsignals,killgate}.py` + CLI `midcap-killgate`
+    + 14 tests. See `docs/phase-M3-killgate.md`. **YELLOW: pivot to Track G (recommended).**
+  - **M4** — (GO only) out-of-sample robustness + capacity. ☐ **N/A unless M3 reopens with a GO.**
 - **Track G (Option 1) — Graduation-momentum + days-horizon accumulator cohort. THE MAIN GOAL.**
   - **G0** — start durable long-horizon collection NOW (launchd/cron) + graduation-event detection. ◐
     **Collection RUNNING (interim nohup → `autocrypt_graduation.duckdb`, 7-day hold); durable launchd

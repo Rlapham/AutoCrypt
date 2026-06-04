@@ -762,5 +762,65 @@ def midcap_costs(
     store.close()
 
 
+@app.command(name="midcap-killgate")
+def midcap_killgate(
+    source: str = typer.Option("coingecko_mcap_ranked", help="Universe snapshot source."),
+    speculative_only: bool = typer.Option(
+        True, help="Run on the speculative subset (drop pegged/pegged LST/stable/wrapped pairs)."
+    ),
+    horizon: int = typer.Option(5, help="Hold period in bars (days)."),
+    lookback: int = typer.Option(10, help="Signal lookback in bars."),
+    fee_bps: float = typer.Option(30.0, help="Swap fee per leg, bps."),
+    out: str = typer.Option("", help="Write the full markdown report to this path."),
+) -> None:
+    """M3 — the mid-cap deep-pool KILL-GATE: signal battery x frequency-vs-expectancy.
+
+    Runs TS momentum, cross-sectional momentum, mean-reversion and a volume-gated breakout
+    through the §3 kill-gate (profitable-after-cost ∧ point-in-time ∧ beats blind+random ∧
+    robust ∧ enough-fires) on daily OHLCV, net of the M2 cost model at a capacity-scaled
+    per-pool size. Read-only. The universe is survivorship-BIASED → a positive is only an
+    upper bound; the ceiling is NO-GO/"unproven", never a GO.
+    DB_URL=duckdb:///data/autocrypt_midcap.duckdb autocrypt midcap-killgate
+    """
+    from autocrypt.midcap.killgate import KillGateConfig, render_markdown, run_killgate
+
+    base = KillGateConfig(horizon=horizon, lookback=lookback, fee_bps=fee_bps)
+    store = _store(read_only=True)
+    rep = run_killgate(
+        store, source=source, speculative_only=speculative_only, base_cfg=base
+    )
+    store.close()
+    if rep.n_pools == 0:
+        console.print(f"[yellow]no in-band pools with enough bars for source '{source}'[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[bold]M3 kill-gate[/bold] — {rep.n_pools} pools "
+        f"({'speculative-only' if rep.speculative_only else 'all'}), source='{source}', "
+        f"horizon={horizon}d lookback={lookback} fee={fee_bps:g}bps — "
+        f"[red]survivorship-BIASED: ceiling is NO-GO/unproven, never a GO[/red]"
+    )
+    t = Table(title="Signal battery — verdict summary")
+    t.add_column("signal", style="cyan")
+    for col in ("scored", "blind exp.", "best exp.", "verdict"):
+        t.add_column(col, justify="right" if col != "verdict" else "left")
+    for s in rep.signals:
+        be = f"{s.best.expectancy:+.2%}" if s.best else "—"
+        t.add_row(
+            s.cfg.signal,
+            str(s.n_scored),
+            f"{s.blind.expectancy:+.2%}",
+            be,
+            s.verdict,
+        )
+    console.print(t)
+
+    if out:
+        from pathlib import Path
+
+        Path(out).write_text(render_markdown(rep))
+        console.print(f"[green]wrote full report → {out}[/green]")
+
+
 if __name__ == "__main__":
     app()
