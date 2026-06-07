@@ -1,8 +1,11 @@
 """Tests for the forward-collector cohort logic — admit/retire/hold. No network.
 
-The collector's value over `poll` is that it HOLDS an admitted pool and tails its
-swaps for hours (capturing a run-up), evicting only by age — not by recency. These
-tests pin that contract on the pure cohort functions.
+The collector's value over `poll` is that it HOLDS an admitted pool and tails its swaps,
+evicting only by age. For Track G the binding requirement is sharper: a GRADUATION pool
+(an AMM pool for a mint already seen on a bonding curve) must be PINNED — admitted even
+when the watchlist is full and held for its full multi-day arc — while non-graduation
+discovery pools churn out fast so the watchlist never freezes. These tests pin that
+contract on the pure cohort functions.
 """
 
 from __future__ import annotations
@@ -10,11 +13,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from autocrypt.ingestion.collect import _admit_candidates, _age_out
+from autocrypt.ingestion.collect import _admit_candidates, _age_out, _is_graduation
 
 
-def _entry(age_s: float) -> dict:
-    return {"ctx": {}, "created_at": datetime.now(UTC) - timedelta(seconds=age_s)}
+def _entry(age_s: float, tier: str = "disc") -> dict:
+    return {"ctx": {}, "created_at": datetime.now(UTC) - timedelta(seconds=age_s), "tier": tier}
 
 
 @dataclass
@@ -30,82 +33,124 @@ class _FakePC:
     event_time: datetime = datetime(2026, 6, 3, tzinfo=UTC)
 
 
+# --- graduation classification ------------------------------------------------------
+
+
+def test_is_graduation_only_amm_with_known_bc_mint() -> None:
+    """A graduation = AMM-venue pool whose mint was already seen on a bonding curve.
+    A direct-AMM pool (mint never on a curve) and a bonding-curve pool are NOT graduations."""
+    bc_mints = {"Mg"}
+    assert _is_graduation(_FakePC("amm", "pumpswap", base_mint="Mg"), bc_mints) is True
+    assert _is_graduation(_FakePC("amm", "pumpswap", base_mint="Md"), bc_mints) is False  # direct-AMM
+    assert _is_graduation(_FakePC("bc", "pumpfun", base_mint="Mg"), bc_mints) is False  # BC pool
+
+
+# --- age-out: tier-based retention --------------------------------------------------
+
+
+def test_age_out_holds_grad_long_retires_discovery_short() -> None:
+    """A graduation pool is held for the long arc; a same-age discovery pool ages out."""
+    watch = {"grad": _entry(10_000, "grad"), "disc": _entry(10_000, "disc")}
+    retired: set[str] = set()
+    n = _age_out(watch, retired, max_pool_age_s=604800.0, discovery_age_s=3600.0)
+    assert n == 1
+    assert "grad" in watch and "disc" not in watch
+    assert "disc" in retired
+
+
 def test_age_out_retires_only_old_pools() -> None:
-    """Pools younger than max_pool_age stay; older ones retire and free their slot."""
+    """Discovery pools younger than discovery_age stay; older ones retire and free a slot."""
     watch = {"young": _entry(10), "old": _entry(10_000)}
     retired: set[str] = set()
-    n = _age_out(watch, retired, max_pool_age_s=3600.0)
+    n = _age_out(watch, retired, max_pool_age_s=604800.0, discovery_age_s=3600.0)
     assert n == 1
-    assert "young" in watch and "old" not in watch
-    assert "old" in retired
-
-
-def test_retired_pool_not_readmitted() -> None:
-    """A pool retired by age must not climb back into the cohort on a later tick.
-
-    (Enumeration checks `addr in retired`; here we assert age-out populates that set
-    so the readmission guard has something to check.)
-    """
-    watch = {"old": _entry(10_000)}
-    retired: set[str] = set()
-    _age_out(watch, retired, max_pool_age_s=3600.0)
-    assert "old" in retired
+    assert "young" in watch and "old" not in watch and "old" in retired
 
 
 def test_fresh_cohort_held_not_evicted_by_newer() -> None:
-    """Nothing retires while every pool is within the age window — the cohort is held,
-    so newer launches cannot evict a still-young pool (the bug the redesign fixed)."""
+    """Nothing retires while every pool is within its age window — the cohort is held,
+    so newer launches cannot evict a still-young pool."""
     watch = {f"p{i}": _entry(60 * i) for i in range(5)}  # all < 1h old
     retired: set[str] = set()
-    n = _age_out(watch, retired, max_pool_age_s=3600.0)
-    assert n == 0
-    assert len(watch) == 5
+    n = _age_out(watch, retired, max_pool_age_s=604800.0, discovery_age_s=3600.0)
+    assert n == 0 and len(watch) == 5
 
 
-def test_admission_reserves_slots_for_amm_pools() -> None:
-    """Bonding-curve pools must NOT fill the whole watchlist — `amm_reserved` slots stay
-    open so a later graduation (AMM pool) can be tailed. This is the Track-G fix: without
-    it, the ~99% bonding-curve creation stream starves post-graduation collection."""
+# --- admission: graduation pinned above discovery -----------------------------------
+
+
+def test_admission_reserves_slots_for_graduations() -> None:
+    """Discovery (here bonding-curve) pools must NOT fill the whole watchlist —
+    `grad_reserved` slots stay open so an incoming graduation can be tailed."""
     watch: dict[str, dict] = {}
-    bc = [_FakePC(f"bc{i}", "pumpfun") for i in range(20)]
-    admitted = _admit_candidates(watch, bc, watch_max=10, amm_reserved=4)
-    # only watch_max - amm_reserved = 6 bonding-curve pools admitted; 4 slots held for AMM
-    assert admitted == 6
-    assert len(watch) == 6
-    assert all(e["phase"] == "BC" for e in watch.values())
+    bc = [_FakePC(f"bc{i}", "pumpfun", base_mint=f"M{i}") for i in range(20)]
+    admitted = _admit_candidates(watch, bc, set(), set(), watch_max=10, grad_reserved=4)
+    # only watch_max - grad_reserved = 6 discovery pools admitted; 4 slots held for graduations
+    assert admitted == 6 and len(watch) == 6
+    assert all(e["tier"] == "disc" for e in watch.values())
 
 
-def test_admission_prioritizes_amm_then_fills_rest() -> None:
-    """AMM (graduation-target) pools are admitted first and may use full capacity; the
-    reserve only caps non-AMM, so a mixed tick tails every AMM pool plus some BC pools."""
+def test_admission_graduation_uses_reserved_headroom() -> None:
+    """A graduation (AMM pool for a mint already on a curve) is admitted into the reserved
+    headroom even after discovery has filled its unreserved portion."""
     watch: dict[str, dict] = {}
-    cands = [_FakePC("amm0", "pumpswap"), _FakePC("amm1", "raydium")]
-    cands += [_FakePC(f"bc{i}", "pumpfun") for i in range(20)]
-    admitted = _admit_candidates(watch, cands, watch_max=10, amm_reserved=4)
-    phases = [e["phase"] for e in watch.values()]
-    assert phases.count("AMM") == 2  # both AMM pools admitted
-    assert phases.count("BC") == 6  # non-AMM capped at watch_max - amm_reserved
-    assert admitted == 8
+    bc_mints = {"Mg"}
+    cands = [_FakePC("grad0", "pumpswap", base_mint="Mg")]  # the graduation
+    cands += [_FakePC(f"bc{i}", "pumpfun", base_mint=f"M{i}") for i in range(20)]
+    admitted = _admit_candidates(watch, cands, set(), bc_mints, watch_max=10, grad_reserved=4)
+    tiers = [e["tier"] for e in watch.values()]
+    assert tiers.count("grad") == 1  # graduation admitted
+    assert tiers.count("disc") == 6  # discovery still capped at watch_max - grad_reserved
+    assert admitted == 7
+
+
+def test_admission_graduation_never_locked_out_evicts_oldest_discovery() -> None:
+    """When the watchlist is FULL, a graduation evicts the OLDEST discovery pool (and retires
+    it) rather than being dropped — the bug the redesign fixes (saturated watchlist froze and
+    graduations, which arrive minutes-to-hours later, never won a slot)."""
+    # full watchlist of discovery pools, oldest = "old"
+    watch = {"old": _entry(9_000, "disc"), "mid": _entry(5_000, "disc"), "new": _entry(100, "disc")}
+    retired: set[str] = set()
+    bc_mints = {"Mg"}
+    grad = [_FakePC("grad0", "pumpswap", base_mint="Mg")]
+    admitted = _admit_candidates(watch, grad, retired, bc_mints, watch_max=3, grad_reserved=1)
+    assert admitted == 1
+    assert len(watch) == 3  # still capped
+    assert "grad0" in watch and watch["grad0"]["tier"] == "grad"
+    assert "old" not in watch and "old" in retired  # oldest discovery evicted + retired
+    assert "mid" in watch and "new" in watch
+
+
+def test_admission_direct_amm_is_discovery_not_pinned() -> None:
+    """A direct-AMM pool (deep from birth, mint never on a curve) is treated as discovery,
+    NOT a graduation — it must not consume graduation headroom or get long retention."""
+    watch: dict[str, dict] = {}
+    cands = [_FakePC("amm0", "pumpswap", base_mint="Mx")]  # mint NOT in bc_mints
+    admitted = _admit_candidates(watch, cands, set(), set(), watch_max=10, grad_reserved=4)
+    assert admitted == 1 and watch["amm0"]["tier"] == "disc"
 
 
 def test_admission_never_overshoots_watch_max() -> None:
-    """The total watchlist must never exceed watch_max, even when AMM pools fill most of
-    it and non-AMM candidates remain (the rate-limiter guard the runtime caught)."""
-    watch: dict[str, dict] = {}
-    cands = [_FakePC(f"amm{i}", "pumpswap") for i in range(8)]  # 8 AMM
-    cands += [_FakePC(f"bc{i}", "pumpfun") for i in range(10)]  # plenty of BC
-    admitted = _admit_candidates(watch, cands, watch_max=10, amm_reserved=3)
-    assert len(watch) == 10  # NOT 8 + 7; capped at watch_max
-    assert admitted == 10
-    phases = [e["phase"] for e in watch.values()]
-    assert phases.count("AMM") == 8 and phases.count("BC") == 2
+    """The total watchlist must never exceed watch_max, even when many graduations arrive
+    into a full watchlist (each evicts one discovery pool, never growing the total)."""
+    watch = {f"d{i}": _entry(1000 + i, "disc") for i in range(8)}  # 8 discovery, watch_max 10
+    retired: set[str] = set()
+    bc_mints = {f"Mg{i}" for i in range(5)}
+    grads = [_FakePC(f"grad{i}", "pumpswap", base_mint=f"Mg{i}") for i in range(5)]
+    admitted = _admit_candidates(watch, grads, retired, bc_mints, watch_max=10, grad_reserved=4)
+    assert len(watch) <= 10
+    assert admitted == 5  # all 5 graduations admitted (2 into free slots, 3 by eviction)
+    assert sum(1 for e in watch.values() if e["tier"] == "grad") == 5
 
 
-def test_admission_amm_can_consume_reserved_capacity() -> None:
-    """When many AMM pools arrive, they may use the FULL watch_max (the reserve is a floor
-    for AMM, not a ceiling) — graduation tailing is never throttled by the reserve."""
-    watch: dict[str, dict] = {}
-    amm = [_FakePC(f"amm{i}", "pumpswap") for i in range(15)]
-    admitted = _admit_candidates(watch, amm, watch_max=10, amm_reserved=4)
-    assert admitted == 10
-    assert len(watch) == 10
+def test_admission_all_graduation_watchlist_cannot_make_room() -> None:
+    """Safety valve: if the watchlist is full of graduations (no discovery to evict), a new
+    graduation is not admitted rather than overshooting watch_max."""
+    watch = {f"g{i}": _entry(100, "grad") for i in range(3)}  # full, all grad
+    retired: set[str] = set()
+    bc_mints = {"Mg"}
+    admitted = _admit_candidates(
+        watch, [_FakePC("grad_new", "pumpswap", base_mint="Mg")],
+        retired, bc_mints, watch_max=3, grad_reserved=1,
+    )
+    assert admitted == 0 and len(watch) == 3 and "grad_new" not in watch

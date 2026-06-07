@@ -166,19 +166,27 @@ def collect(
     interval: float = typer.Option(60.0, help="Seconds between collection cycles."),
     iterations: int = typer.Option(0, help="Number of cycles (0 = run until Ctrl-C)."),
     enum_pages: int = typer.Option(2, help="Pages of newest pools enumerated per cycle."),
-    watch_max: int = typer.Option(40, help="Max pools tailed for swaps at once (newest kept)."),
-    amm_reserved: int = typer.Option(
-        20, help="Of watch_max, slots reserved for AMM (graduation-target) pools."
+    watch_max: int = typer.Option(40, help="Max pools tailed for swaps at once."),
+    grad_reserved: int = typer.Option(
+        20, "--grad-reserved", "--amm-reserved",
+        help="Of watch_max, slots kept open for graduation pools (alias: --amm-reserved).",
     ),
-    max_pool_age_h: float = typer.Option(24.0, help="Stop tailing a pool this many hours after creation."),
+    max_pool_age_h: float = typer.Option(
+        168.0, help="Hold a GRADUATION pool this many hours (its multi-day arc)."
+    ),
+    discovery_age_h: float = typer.Option(
+        6.0, help="Hold a non-graduation discovery pool only this many hours (keeps slots open)."
+    ),
     tx_pages: int = typer.Option(2, help="Pages of recent swaps tailed per pool per cycle."),
 ) -> None:
     """Forward-collect a survivorship-complete SWAP dataset (the free multi-day path).
 
     Unlike `poll` (PoolCreated only) or `stream` (fixed watchlist), `collect` both
-    enumerates new pools AND tails their swaps over a rolling, age-bounded watchlist.
-    `amm_reserved` keeps headroom for graduated (AMM-venue) pools so Track G captures the
-    post-graduation accumulator arc, not just bonding-curve activity.
+    enumerates new pools AND tails their swaps over a rolling watchlist. Graduation pools
+    (an AMM pool for a mint already seen on a bonding curve) are PINNED and held for
+    `--max-pool-age-h` to capture the multi-day post-graduation accumulator arc Track G
+    needs; `--grad-reserved` slots stay open for them and discovery pools age out after the
+    shorter `--discovery-age-h` so the watchlist never freezes.
     Run unattended for days/weeks to accumulate the dataset the kill-gate profiler needs.
     """
     from autocrypt.ingestion.collect import run_collect
@@ -193,8 +201,9 @@ def collect(
             max_iterations=None if iterations == 0 else iterations,
             enum_pages=enum_pages,
             watch_max=watch_max,
-            amm_reserved=amm_reserved,
+            grad_reserved=grad_reserved,
             max_pool_age_s=max_pool_age_h * 3600.0,
+            discovery_age_s=discovery_age_h * 3600.0,
             tx_pages=tx_pages,
         )
     )

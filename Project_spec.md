@@ -6,12 +6,29 @@
 
 ## Current status
 
-- **NOW: ITERATION 2 — pivoted to TRACK G (main goal). G0 graduation-event detector BUILT +
-  validated (genuine graduation rate 1.71% ≈ the known ~1%); the decisive collection gap
-  (≈0 post-graduation swap coverage) was found AND fixed (`collect --amm-reserved`). G1
-  accumulator relabel BUILT + tested but NOT YET RUN (no post-grad data + <10h horizon —
-  data-gated, weeks out). Track M's daily battery stays a closed NO-GO; its forward snapshot
-  keeps accruing.** See `docs/phase-G0-synthesis.md` + `docs/phase-G0-census.md`.
+- **NOW: ITERATION 2 — TRACK G (main goal). The Track-G data pipeline was found BROKEN and was
+  fixed + redeployed this session (G1, 2026-06-07). Diagnosis: Track G is blocked by collection
+  INFRASTRUCTURE, not its thesis — (a) collection died on the Jun-7 reboot (~4 days lost; nohup
+  doesn't survive reboot), (b) post-grad coverage stuck at 2/185, (c) DECISIVE: the collector
+  saturated its watchlist on tick 1 and froze it for 7 days, so graduations (AMM pool appears
+  minutes-to-hours after the bonding-curve pool) were locked out — of 50 AMM pools ever tailed,
+  longest arc 1.32h, ZERO ≥6h. FIX BUILT + DEPLOYED: graduation-aware admission — graduation
+  pools (an AMM pool for a mint already seen on a bonding curve) are PINNED (never locked out,
+  evict oldest discovery if full) and held 168h for the multi-day arc, while discovery pools age
+  out at 6h so the watchlist never freezes. Validated LIVE: first tick `grad_watched=5` vs the
+  old 2/185 over 10h. 119/119 green, ruff clean. G1/G2 remain DATA-GATED (the 5+ pinned
+  graduations now need days/weeks of UPTIME to accrue arcs). DURABILITY stays interim nohup
+  (operator's call) → collection dies on reboot; relaunch every session. Track M's daily battery
+  stays a closed NO-GO; its forward snapshot keeps accruing.** See `docs/phase-G1-synthesis.md`
+  + `docs/phase-G0-census.md` (+ prior `docs/phase-G0-synthesis.md`).
+  - **G1-collection-fix (2026-06-07) — graduation-aware collector, BUILT + DEPLOYED.**
+    `ingestion/collect.py`: `bc_mints` point-in-time graduation detector (`_is_graduation`:
+    AMM pool whose mint was already seen on a bonding curve; no look-ahead; direct-AMM excluded),
+    graduation pools PINNED in `_admit_candidates` (evict oldest discovery when full), tier-based
+    retention in `_age_out` (grad 168h / discovery 6h). CLI `collect --grad-reserved` (alias
+    `--amm-reserved` kept) + `--discovery-age-h`; `--max-pool-age-h` default 24h→168h. Wrapper
+    `scripts/g0_collect_interim.sh` updated + redeployed. `tests/test_collect.py` rewritten (10
+    tests). Reversion: `git revert` the collect commit + restart wrapper. **119/119 green.**
   - **G0 (2026-06-03) — graduation-event detection DONE; collection gap FIXED.** Built
     `src/autocrypt/grad/graduation.py` (venue→phase taxonomy bonding-curve {pumpfun,
     meteora_dbc} vs AMM {pumpswap, raydium*, orca, meteora*, manifest}; graduation = a mint's
@@ -272,14 +289,19 @@ survivorship-complete ∧ beats-blind+random ∧ robust ∧ enough-fires (strate
 - **Track G (Option 1) — Graduation-momentum + days-horizon accumulator cohort. THE MAIN GOAL.**
   - **G0** — durable long-horizon collection + graduation-event detection. ✅ **Detection DONE
     (2026-06-03):** `grad/graduation.py` + CLI `grad-detect`; point-in-time, survivorship-complete;
-    genuine graduation rate **1.71%** (≈ known ~1%); co-launch artifacts flagged. **Collection gap
-    found + FIXED:** `collect --amm-reserved` reserves watchlist slots for AMM (graduation-target)
-    pools so post-grad arcs are tailed (was ≈0/181 coverage). Collection RUNNING (interim nohup,
-    AMM-reserved); durable launchd still blocked by macOS TCC. See `docs/phase-G0-census.md`.
+    genuine graduation rate **1.68–1.71%** (≈ known ~1%); co-launch artifacts flagged. **Collection
+    redesigned (2026-06-07):** the G0 `--amm-reserved` fix was insufficient — the watchlist
+    saturated on tick 1 and froze for 7 days, locking graduations out (coverage stuck 2/185).
+    Superseded by **graduation-aware admission** (`collect --grad-reserved`): graduation pools
+    PINNED + held 168h, discovery churns at 6h. Deployed + validated live (first tick
+    `grad_watched=5`). Durability still interim nohup (dies on reboot — operator's call). See
+    `docs/phase-G1-synthesis.md` + `docs/phase-G0-census.md`.
   - **G1** — re-labelled "accumulator" attribution (success = survives+appreciates over N days). ◐
     **Label BUILT + tested (`grad/accumulator_label.py`): resolves at the horizon, survival-gated
-    (moon-then-rug = FAILURE), point-in-time. NOT YET RUN — data-gated (0–2/181 post-grad coverage
-    + <10h horizon). Ready to drive a WalletScoreBook rebuild once the fixed collector ripens.**
+    (moon-then-rug = FAILURE), point-in-time. NOT YET RUN — data-gated. The collection that feeds
+    it is now FIXED (graduation-aware, 2026-06-07) and accruing, but the pinned graduations need
+    days/weeks of UPTIME to ripen into multi-day arcs. Ready to drive a WalletScoreBook rebuild
+    once coverage is meaningful.**
   - **G2** — graduation-momentum **KILL-GATE** (+ orchestrator-fade overlay). ☐
   - **G3** — (GO only) attribution model proper + robustness. ☐
 - **Cross-cutting** — Direction 3: reuse the Iteration-1 orchestrator detector as a rug/avoid gate

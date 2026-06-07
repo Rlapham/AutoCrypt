@@ -48,35 +48,46 @@ def _ctx_from_pool_created(pc: object) -> dict:
     }
 
 
+def _is_graduation(pc: object, bc_mints: set[str]) -> bool:
+    """A candidate is a graduation iff it is an AMM-venue pool whose mint we have already
+    seen on a bonding curve. Point-in-time: `bc_mints` holds only mints enumerated at/before
+    this tick, and a bonding-curve pool is always created before its AMM pool, so this label
+    uses no look-ahead. Direct-AMM pools (deep from birth, no prior BC) are NOT graduations."""
+    return (
+        venue_phase(pc.dex) == "AMM"  # type: ignore[attr-defined]
+        and pc.base_mint in bc_mints  # type: ignore[attr-defined]
+    )
+
+
 async def _enumerate_new_pools(
     store: EventStore,
     dp: DexPaprika,
     watchlist: dict[str, dict],
     retired: set[str],
+    bc_mints: set[str],
     *,
     run_id: str,
     pages: int,
     page_limit: int,
     watch_max: int,
-    amm_reserved: int,
+    grad_reserved: int,
     latency: timedelta,
 ) -> int:
-    """Fetch newest pools, persist PoolCreated, and admit new ones to the cohort.
+    """Fetch newest pools, persist PoolCreated, learn bonding-curve mints, and admit.
 
     PoolCreated is always written for every enumerated pool (the survivorship-complete
-    universe — unaffected by admission). A pool is *admitted to the swap-tailing cohort*
-    only while there is free capacity and it has not been retired by age-out, so an
-    admitted pool is held and tailed for hours/days (see `_age_out`), capturing its arc.
+    universe — unaffected by admission). `bc_mints` accumulates every mint ever seen on a
+    bonding-curve venue, so a later AMM pool for that mint can be recognised as a
+    *graduation* (the constant-product analogue of "graduated to real liquidity").
 
-    AMM-PRIORITY ADMISSION (Track G fix). The newest-by-creation stream is ~99%
-    bonding-curve pools, so without a reserve the watchlist fills with pre-graduation
-    pools and the (later-created, rarer) AMM pool of a *graduated* token almost never gets
-    a slot — leaving Track G with zero post-graduation swap coverage. We therefore:
-      1. admit AMM-venue pools FIRST (they are the graduation targets we most want to tail
-         through the multi-day accumulator arc), and
-      2. reserve `amm_reserved` of the `watch_max` slots for AMM pools — bonding-curve /
-         other pools may fill only up to `watch_max - amm_reserved`, keeping headroom for
-         AMM pools that appear in later ticks.
+    GRADUATION-AWARE ADMISSION (the Track-G fix). The earlier design saturated the
+    watchlist on the first tick and then *froze* it for `max_pool_age` (every slot held
+    for days), so the later-created AMM pool of a graduating token — appearing minutes to
+    hours after its bonding-curve pool — never won a slot (post-grad coverage ≈ 1%).
+    Now admission is tiered (see `_admit_candidates`): graduation pools are PINNED (never
+    locked out, evicting the oldest discovery pool if the watchlist is full) and held for
+    the full multi-day arc; everything else is short-lived discovery that churns out fast
+    (see `_age_out`) to keep slots open for the next graduation.
     Survivorship is untouched: every enumerated pool is still written as PoolCreated; only
     which pools get their *swaps* tailed changes.
 
@@ -94,56 +105,82 @@ async def _enumerate_new_pools(
             continue
         pc.observed_at = observed  # audit only
         events.append(pc)
+        # Learn bonding-curve mints from EVERY enumerated pool (not just admitted ones), so
+        # a graduation is recognised even if the bonding-curve pool itself was never tailed.
+        if venue_phase(pc.dex) == "BC":
+            bc_mints.add(pc.base_mint)
         addr = pc.pool_address
         if addr not in watchlist and addr not in retired and addr not in fresh:
             fresh[addr] = pc
     store.write_events(events)
     return _admit_candidates(
-        watchlist, list(fresh.values()), watch_max=watch_max, amm_reserved=amm_reserved
+        watchlist,
+        list(fresh.values()),
+        retired,
+        bc_mints,
+        watch_max=watch_max,
+        grad_reserved=grad_reserved,
     )
 
 
 def _admit_candidates(
     watchlist: dict[str, dict],
     candidates: list,
+    retired: set[str],
+    bc_mints: set[str],
     *,
     watch_max: int,
-    amm_reserved: int,
+    grad_reserved: int,
 ) -> int:
-    """Admit this tick's fresh candidates to the watchlist with AMM priority + reserve.
+    """Admit this tick's fresh candidates with graduation pools PINNED above discovery.
 
-    Pure (no I/O): mutates `watchlist`, returns the number admitted. AMM-venue pools are
-    admitted first up to `watch_max`; non-AMM pools fill only up to `watch_max -
-    amm_reserved`, so a reserve of slots is always available for AMM (graduation-target)
-    pools that surface in later ticks. See `_enumerate_new_pools` for the why.
+    Pure (no I/O): mutates `watchlist`/`retired`, returns the number admitted.
+      1. Graduation pools (`_is_graduation`) are admitted FIRST and are never locked out:
+         if the watchlist is full, the oldest *discovery* pool is evicted (and retired so
+         it is not re-admitted) to make room. These are the scarce Track-G targets.
+      2. Discovery pools (bonding-curve, direct-AMM, other) fill only up to
+         `watch_max - grad_reserved`, so a reserve of slots always stays open for the next
+         graduation — and they age out fast (see `_age_out`) to keep that headroom.
     """
 
-    def _admit(pc: object) -> None:
+    def _admit(pc: object, tier: str) -> None:
         watchlist[pc.pool_address] = {  # type: ignore[attr-defined]
             "ctx": _ctx_from_pool_created(pc),
             "created_at": pc.event_time,  # type: ignore[attr-defined]
             "phase": venue_phase(pc.dex),  # type: ignore[attr-defined]
+            "tier": tier,
         }
 
-    amm = [pc for pc in candidates if venue_phase(pc.dex) == "AMM"]
-    other = [pc for pc in candidates if venue_phase(pc.dex) != "AMM"]
+    def _oldest_discovery() -> str | None:
+        disc = [(e["created_at"], a) for a, e in watchlist.items() if e.get("tier") != "grad"]
+        return min(disc)[1] if disc else None
+
+    grads = [pc for pc in candidates if _is_graduation(pc, bc_mints)]
+    others = [pc for pc in candidates if not _is_graduation(pc, bc_mints)]
     admitted = 0
-    for pc in amm:  # 1) AMM (graduation targets) may use the full capacity
+
+    for pc in grads:  # 1) graduations: pinned, never locked out
+        if pc.pool_address in watchlist:  # type: ignore[attr-defined]
+            continue
         if len(watchlist) >= watch_max:
-            break
-        _admit(pc)
+            victim = _oldest_discovery()
+            if victim is None:
+                break  # watchlist is entirely graduations — cannot make room
+            del watchlist[victim]
+            retired.add(victim)
+        _admit(pc, "grad")
         admitted += 1
-    non_amm_cap = max(0, watch_max - amm_reserved)
-    for pc in other:  # 2) non-AMM fill only the unreserved portion, leaving AMM headroom
-        # Respect BOTH the total cap (rate-limiter guard) AND the non-AMM sub-cap. The
-        # total check matters when AMM pools already filled past `non_amm_cap` slots this
-        # tick — without it the watchlist could overshoot watch_max.
-        if len(watchlist) >= watch_max:
+
+    disc_cap = max(0, watch_max - grad_reserved)
+    n_disc = sum(1 for e in watchlist.values() if e.get("tier") != "grad")
+    for pc in others:  # 2) discovery: fill the unreserved portion only, leaving grad headroom
+        if pc.pool_address in watchlist:  # type: ignore[attr-defined]
+            continue
+        if len(watchlist) >= watch_max or n_disc >= disc_cap:
             break
-        if sum(1 for e in watchlist.values() if e.get("phase") != "AMM") >= non_amm_cap:
-            break
-        _admit(pc)
+        _admit(pc, "disc")
         admitted += 1
+        n_disc += 1
     return admitted
 
 
@@ -189,19 +226,31 @@ async def _tail_watchlist(
     return store.count() - before
 
 
-def _age_out(watchlist: dict[str, dict], retired: set[str], *, max_pool_age_s: float) -> int:
-    """Retire pools whose early-life window has fully elapsed, freeing cohort slots.
+def _age_out(
+    watchlist: dict[str, dict],
+    retired: set[str],
+    *,
+    max_pool_age_s: float,
+    discovery_age_s: float,
+) -> int:
+    """Retire pools whose tail window has elapsed, freeing cohort slots, by TIER.
 
-    Eviction is by AGE ONLY (not recency): an admitted pool is tailed continuously for
-    `max_pool_age_s` after its creation, so we capture the whole launch→run-up arc, then
-    it retires and frees a slot for a newer pool. Retired addresses are remembered so a
-    still-listed old pool is not re-admitted. Returns the number retired this tick.
+    Eviction is by AGE ONLY (not recency). The window depends on the tier:
+      - GRADUATION pools are held for `max_pool_age_s` (long) — we want the whole multi-day
+        post-graduation accumulator arc, including a token that goes quiet then re-accumulates.
+      - DISCOVERY pools (bonding-curve / direct-AMM / other) are held for `discovery_age_s`
+        (short): long enough to catch a bonding-curve pool's graduation (median lag ~5min,
+        p90 ~21min) before it churns out, short enough that the watchlist never freezes and
+        graduation headroom stays open.
+    Retired addresses are remembered so a still-listed old pool is not re-admitted.
+    Returns the number retired this tick.
     """
     now = datetime.now(UTC)
     stale = [
         a
         for a, e in watchlist.items()
-        if (now - e["created_at"]).total_seconds() > max_pool_age_s
+        if (now - e["created_at"]).total_seconds()
+        > (max_pool_age_s if e.get("tier") == "grad" else discovery_age_s)
     ]
     for addr in stale:
         del watchlist[addr]
@@ -218,31 +267,39 @@ async def run_collect(
     enum_pages: int = 2,
     page_limit: int = 100,
     watch_max: int = 40,
-    amm_reserved: int = 20,
-    max_pool_age_s: float = 86400.0,
+    grad_reserved: int = 20,
+    max_pool_age_s: float = 604800.0,
+    discovery_age_s: float = 21600.0,
     tx_pages: int = 2,
     latency: timedelta = timedelta(seconds=2),
 ) -> int:
     """Run the forward-collection loop. `max_iterations=None` runs until cancelled.
 
-    `amm_reserved` of `watch_max` slots are kept for AMM-venue (graduation-target) pools so
-    the post-graduation accumulator arc actually gets tailed (see `_enumerate_new_pools`).
+    Graduation pools (an AMM pool for a mint already seen on a bonding curve) are pinned and
+    held for `max_pool_age_s` to capture the multi-day post-graduation accumulator arc;
+    `grad_reserved` of `watch_max` slots stay open for them, and discovery pools age out
+    after the shorter `discovery_age_s` so the watchlist never freezes (see
+    `_enumerate_new_pools` / `_age_out`).
 
     Returns total swap/wallet records written (PoolCreated writes are not counted here).
     """
     dp = DexPaprika()
     watchlist: dict[str, dict] = {}
     retired: set[str] = set()
+    bc_mints: set[str] = set()  # mints ever seen on a bonding curve → graduation detector
     seen: set[str] = set()
     total = 0
     i = 0
     try:
         while max_iterations is None or i < max_iterations:
             # age-out first so freed slots can be filled by this tick's enumeration
-            aged = _age_out(watchlist, retired, max_pool_age_s=max_pool_age_s)
+            aged = _age_out(
+                watchlist, retired,
+                max_pool_age_s=max_pool_age_s, discovery_age_s=discovery_age_s,
+            )
             admitted = await _enumerate_new_pools(
-                store, dp, watchlist, retired, run_id=run_id, pages=enum_pages,
-                page_limit=page_limit, watch_max=watch_max, amm_reserved=amm_reserved,
+                store, dp, watchlist, retired, bc_mints, run_id=run_id, pages=enum_pages,
+                page_limit=page_limit, watch_max=watch_max, grad_reserved=grad_reserved,
                 latency=latency,
             )
             written = await _tail_watchlist(
@@ -255,6 +312,8 @@ async def run_collect(
                 admitted=admitted,
                 retired=aged,
                 watched=len(watchlist),
+                grad_watched=sum(1 for e in watchlist.values() if e.get("tier") == "grad"),
+                bc_mints=len(bc_mints),
                 new_rows=written,  # net-new swap+wallet rows (post-dedup)
                 total_new_rows=total,
             )
