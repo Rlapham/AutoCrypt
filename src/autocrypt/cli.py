@@ -167,6 +167,9 @@ def collect(
     iterations: int = typer.Option(0, help="Number of cycles (0 = run until Ctrl-C)."),
     enum_pages: int = typer.Option(2, help="Pages of newest pools enumerated per cycle."),
     watch_max: int = typer.Option(40, help="Max pools tailed for swaps at once (newest kept)."),
+    amm_reserved: int = typer.Option(
+        20, help="Of watch_max, slots reserved for AMM (graduation-target) pools."
+    ),
     max_pool_age_h: float = typer.Option(24.0, help="Stop tailing a pool this many hours after creation."),
     tx_pages: int = typer.Option(2, help="Pages of recent swaps tailed per pool per cycle."),
 ) -> None:
@@ -174,6 +177,8 @@ def collect(
 
     Unlike `poll` (PoolCreated only) or `stream` (fixed watchlist), `collect` both
     enumerates new pools AND tails their swaps over a rolling, age-bounded watchlist.
+    `amm_reserved` keeps headroom for graduated (AMM-venue) pools so Track G captures the
+    post-graduation accumulator arc, not just bonding-curve activity.
     Run unattended for days/weeks to accumulate the dataset the kill-gate profiler needs.
     """
     from autocrypt.ingestion.collect import run_collect
@@ -188,6 +193,7 @@ def collect(
             max_iterations=None if iterations == 0 else iterations,
             enum_pages=enum_pages,
             watch_max=watch_max,
+            amm_reserved=amm_reserved,
             max_pool_age_s=max_pool_age_h * 3600.0,
             tx_pages=tx_pages,
         )
@@ -820,6 +826,69 @@ def midcap_killgate(
 
         Path(out).write_text(render_markdown(rep))
         console.print(f"[green]wrote full report → {out}[/green]")
+
+
+@app.command(name="grad-detect")
+def grad_detect(
+    min_lag_s: float = typer.Option(
+        120.0, help="BC→AMM lag below this is flagged suspect_colaunch (config artifact)."
+    ),
+    out: str = typer.Option("", help="Write the full markdown census to this path."),
+) -> None:
+    """G0 — graduation-event detection over the graduation-cohort store (read-only).
+
+    Detects the discrete liquidity-deepening milestone — a mint's first AMM-venue pool
+    created at/after its bonding-curve pool — point-in-time (stamped at the AMM pool's
+    knowable_at) and survivorship-complete (every bonding-curve-origin mint is the
+    denominator; never-graduated mints are retained). Near-simultaneous BC→AMM pairs are
+    flagged as co-launch artifacts, not counted as genuine graduations.
+
+    NOTE: the live `collect` writer holds a continuous DuckDB lock, so point DB_URL at a
+    SNAPSHOT COPY of the graduation store, not the live file:
+      cp data/autocrypt_graduation.duckdb /tmp/grad_snap.duckdb
+      DB_URL=duckdb:///tmp/grad_snap.duckdb autocrypt grad-detect --out docs/phase-G0-census.md
+    """
+    from autocrypt.grad.graduation import detect_graduations, render_markdown
+
+    store = _store(read_only=True)
+    census = detect_graduations(store, min_lag_s=min_lag_s)
+    store.close()
+
+    span_h = 0.0
+    if census.window_start and census.window_end:
+        span_h = (census.window_end - census.window_start).total_seconds() / 3600.0
+    console.print(
+        f"[bold]G0 graduation census[/bold] — {census.n_pool_creations:,} pool creations / "
+        f"{census.n_distinct_mints:,} mints over ~{span_h:.1f}h"
+    )
+    t = Table(title="Graduation funnel (survivorship-complete)")
+    t.add_column("stage", style="cyan")
+    t.add_column("count", justify="right")
+    t.add_row("bonding-curve-origin mints (denominator)", f"{census.n_bc_origin:,}")
+    t.add_row("graduated BC→AMM (incl. suspect)", f"{census.n_graduated:,}")
+    t.add_row(f"genuine (lag ≥ {min_lag_s:.0f}s)", f"{census.n_genuine:,}")
+    t.add_row("suspect co-launch artifacts", f"{census.n_suspect_colaunch:,}")
+    t.add_row("never graduated (died on curve)", f"{census.n_never_graduated:,}")
+    t.add_row("direct-AMM (deep from birth)", f"{census.n_direct_amm:,}")
+    console.print(t)
+    console.print(
+        f"genuine graduation rate: [bold]{census.graduation_rate:.2%}[/bold]  "
+        f"post-grad swap coverage: [{'red' if census.n_with_post_grad_swaps == 0 else 'yellow'}]"
+        f"{census.n_with_post_grad_swaps}/{census.n_genuine}[/] graduations have AMM swaps"
+    )
+    if census.by_transition:
+        tt = Table(title="Transitions (BC venue → AMM venue)")
+        tt.add_column("transition", style="cyan")
+        tt.add_column("count", justify="right")
+        for trans, n in census.by_transition.items():
+            tt.add_row(trans, str(n))
+        console.print(tt)
+
+    if out:
+        from pathlib import Path
+
+        Path(out).write_text(render_markdown(census))
+        console.print(f"[green]wrote full census → {out}[/green]")
 
 
 if __name__ == "__main__":

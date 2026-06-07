@@ -6,9 +6,32 @@
 
 ## Current status
 
-- **NOW: ITERATION 2 — M3 done: Track M daily signal battery is a NO-GO (kill-gate closed). YELLOW
-  fork open: pivot to Track G (main goal). Track M's forward snapshot keeps accruing for an
-  unbiased re-test.**
+- **NOW: ITERATION 2 — pivoted to TRACK G (main goal). G0 graduation-event detector BUILT +
+  validated (genuine graduation rate 1.71% ≈ the known ~1%); the decisive collection gap
+  (≈0 post-graduation swap coverage) was found AND fixed (`collect --amm-reserved`). G1
+  accumulator relabel BUILT + tested but NOT YET RUN (no post-grad data + <10h horizon —
+  data-gated, weeks out). Track M's daily battery stays a closed NO-GO; its forward snapshot
+  keeps accruing.** See `docs/phase-G0-synthesis.md` + `docs/phase-G0-census.md`.
+  - **G0 (2026-06-03) — graduation-event detection DONE; collection gap FIXED.** Built
+    `src/autocrypt/grad/graduation.py` (venue→phase taxonomy bonding-curve {pumpfun,
+    meteora_dbc} vs AMM {pumpswap, raydium*, orca, meteora*, manifest}; graduation = a mint's
+    first AMM pool created at/after its bonding-curve pool, stamped point-in-time at the AMM
+    pool's `knowable_at`, survivorship-complete; co-launch artifacts — meteora DBC+DAMM seeded
+    together, lag <120s — flagged `suspect_colaunch` and excluded from the rate) + CLI
+    `grad-detect`. On ~10h real data: **181 genuine graduations / 10,557 bonding-curve-origin
+    mints = 1.71%**, predominantly `pumpfun→pumpswap`. **Key finding: 0–2/181 had ANY
+    post-graduation swap** — the collector tailed newest-by-creation (≈99% bonding-curve)
+    pools, so graduated AMM pools never won a watchlist slot ⇒ Track G had no data. **Fixed:**
+    `collect --amm-reserved` reserves watchlist capacity for AMM pools (deployed; swap mix
+    flipped pumpswap-heavy 21.6k vs 7.9k). A cap-overshoot bug (watchlist 66 vs max 60) was
+    caught from runtime + fixed. **116/116 tests green, ruff clean** (+19).
+  - **G1 (2026-06-03) — accumulator relabel BUILT + tested, NOT RUN (data-gated).** Built
+    `src/autocrypt/grad/accumulator_label.py`: success = within N days the token **appreciates
+    ≥X% AND survives** (no rug below floor, still trading at horizon); resolves **at the
+    horizon** (a moon-then-rug is a FAILURE — the orchestrator trade we must not learn from);
+    point-in-time. NOT run on real data: 0–2/181 post-grad coverage + <10h elapsed = nothing
+    to label. Refused to fabricate a wallet book on absent data (honesty discipline). Ready to
+    drive a `WalletScoreBook` rebuild once the now-fixed collector ripens (weeks).
   Iteration 1 is a **conclusive, shelved NO-GO** for automated short-hold low-cap Solana (both
   signals lose; cause is structural: ≈0% short-hold drift vs ~20–28% costs). **Iteration 2** reuses
   the verdict machine via two concurrent tracks: **Track M (mid-cap deep-pool, immediate)** and
@@ -247,11 +270,16 @@ survivorship-complete ∧ beats-blind+random ∧ robust ∧ enough-fires (strate
     + 14 tests. See `docs/phase-M3-killgate.md`. **YELLOW: pivot to Track G (recommended).**
   - **M4** — (GO only) out-of-sample robustness + capacity. ☐ **N/A unless M3 reopens with a GO.**
 - **Track G (Option 1) — Graduation-momentum + days-horizon accumulator cohort. THE MAIN GOAL.**
-  - **G0** — start durable long-horizon collection NOW (launchd/cron) + graduation-event detection. ◐
-    **Collection RUNNING (interim nohup → `autocrypt_graduation.duckdb`, 7-day hold); durable launchd
-    form built but blocked by macOS TCC (grant FDA to `uv` or relocate repo). Graduation-event
-    *detection* still TODO (derivable from the raw multi-day store).**
-  - **G1** — re-labelled "accumulator" attribution (success = survives+appreciates over N days). ☐
+  - **G0** — durable long-horizon collection + graduation-event detection. ✅ **Detection DONE
+    (2026-06-03):** `grad/graduation.py` + CLI `grad-detect`; point-in-time, survivorship-complete;
+    genuine graduation rate **1.71%** (≈ known ~1%); co-launch artifacts flagged. **Collection gap
+    found + FIXED:** `collect --amm-reserved` reserves watchlist slots for AMM (graduation-target)
+    pools so post-grad arcs are tailed (was ≈0/181 coverage). Collection RUNNING (interim nohup,
+    AMM-reserved); durable launchd still blocked by macOS TCC. See `docs/phase-G0-census.md`.
+  - **G1** — re-labelled "accumulator" attribution (success = survives+appreciates over N days). ◐
+    **Label BUILT + tested (`grad/accumulator_label.py`): resolves at the horizon, survival-gated
+    (moon-then-rug = FAILURE), point-in-time. NOT YET RUN — data-gated (0–2/181 post-grad coverage
+    + <10h horizon). Ready to drive a WalletScoreBook rebuild once the fixed collector ripens.**
   - **G2** — graduation-momentum **KILL-GATE** (+ orchestrator-fade overlay). ☐
   - **G3** — (GO only) attribution model proper + robustness. ☐
 - **Cross-cutting** — Direction 3: reuse the Iteration-1 orchestrator detector as a rug/avoid gate
