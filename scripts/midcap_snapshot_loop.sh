@@ -13,7 +13,9 @@
 
 set -euo pipefail
 export PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:$PATH"
-REPO="/Users/richardlapham/Documents/Git/AutoCrypt"
+# Self-locating: derive repo root from this script's own path so a repo move
+# (e.g. out of ~/Documents to dodge macOS TCC) doesn't silently break the agent.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 export DB_URL="duckdb:///${REPO}/data/autocrypt_midcap.duckdb"
 

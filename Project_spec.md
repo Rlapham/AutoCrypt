@@ -17,9 +17,17 @@
   evict oldest discovery if full) and held 168h for the multi-day arc, while discovery pools age
   out at 6h so the watchlist never freezes. Validated LIVE: first tick `grad_watched=5` vs the
   old 2/185 over 10h. 119/119 green, ruff clean. G1/G2 remain DATA-GATED (the 5+ pinned
-  graduations now need days/weeks of UPTIME to accrue arcs). DURABILITY stays interim nohup
-  (operator's call) → collection dies on reboot; relaunch every session. Track M's daily battery
-  stays a closed NO-GO; its forward snapshot keeps accruing.** See `docs/phase-G1-synthesis.md`
+  graduations now need days/weeks of UPTIME to accrue arcs). DURABILITY RESOLVED (2026-06-07,
+  post-G1): the durable fix was deployed — the repo was relocated to `~/Dev/AutoCrypt` (out of
+  the TCC-protected `~/Documents`) and the collector now runs under a launchd LaunchAgent
+  (`com.autocrypt.collector`, `RunAtLoad`+`KeepAlive`, runs `scripts/g0_collect.sh`), verified
+  bootstrapped + running (KeepAlive observed auto-restarting it). It now survives reboot
+  (auto-starts at login) and crash; the old "relaunch every session" nohup ritual is RETIRED —
+  the next session must NOT start `g0_collect_interim.sh` (a duplicate would collide on the
+  single-writer DuckDB lock). One real reboot test remains as final human confirmation. NOTE:
+  the Track-M snapshot loop is NOT under launchd and is currently stopped (Track M is a closed
+  NO-GO, so this is optional). Track M's daily battery stays a closed NO-GO; its forward snapshot
+  is paused.** See `docs/phase-G1-synthesis.md`
   + `docs/phase-G0-census.md` (+ prior `docs/phase-G0-synthesis.md`).
   - **G1-collection-fix (2026-06-07) — graduation-aware collector, BUILT + DEPLOYED.**
     `ingestion/collect.py`: `bc_mints` point-in-time graduation detector (`_is_graduation`:
@@ -116,10 +124,15 @@
     (CoinGecko `/coins/markets` → Solana mint → deepest GeckoTerminal pool → depth filter), the
     inverted funnel. Yielded 113 in-band names at the signed-off band — the YELLOW loosen-vs-pay
     fork was not needed. See the M1b bullet above + `docs/phase-M1b-synthesis.md`.
-  - **G0 (done, with caveat):** the old nohup collector was **dead**; rebuilt durable (launchd) but
-    **macOS TCC blocks it** (repo under `~/Documents`). Operator chose **interim nohup** (running,
-    accruing to `data/autocrypt_graduation.duckdb`) — **dies on reboot**; durable fix = grant Full
-    Disk Access to `uv` or relocate the repo. A second nohup takes daily Track-M universe snapshots.
+  - **G0 durability (RESOLVED 2026-06-07, post-G1):** the durable fix was deployed. The repo was
+    relocated to `~/Dev/AutoCrypt` (out of the TCC-protected `~/Documents`, sidestepping the macOS
+    TCC block entirely) and the launchd LaunchAgent `com.autocrypt.collector` (`RunAtLoad` +
+    `KeepAlive`, `ThrottleInterval` 60, runs `scripts/g0_collect.sh`) is bootstrapped and running,
+    accruing to `data/autocrypt_graduation.duckdb`. It now survives reboot (auto-starts at login)
+    and crash (KeepAlive). The interim `nohup` ritual is **retired** — do NOT relaunch
+    `g0_collect_interim.sh` (a second writer would collide on the single-writer DuckDB lock).
+    Caveat: a LaunchAgent starts at *login*, not pre-login boot, so one real reboot test is the
+    final confirmation. The Track-M snapshot loop is NOT under launchd and is currently stopped.
   *Everything below is Iteration-1 history, retained for context.*
 
 - **Phase:** 2/3 (KILL-GATE) — **NO-GO now STRONGER: the claimed wallet-attribution edge was BUILT
@@ -294,14 +307,20 @@ survivorship-complete ∧ beats-blind+random ∧ robust ∧ enough-fires (strate
     saturated on tick 1 and froze for 7 days, locking graduations out (coverage stuck 2/185).
     Superseded by **graduation-aware admission** (`collect --grad-reserved`): graduation pools
     PINNED + held 168h, discovery churns at 6h. Deployed + validated live (first tick
-    `grad_watched=5`). Durability still interim nohup (dies on reboot — operator's call). See
-    `docs/phase-G1-synthesis.md` + `docs/phase-G0-census.md`.
+    `grad_watched=5`). **Durability RESOLVED (post-G1):** repo relocated to `~/Dev/AutoCrypt` +
+    launchd LaunchAgent `com.autocrypt.collector` (survives reboot/crash); interim nohup retired.
+    See `docs/phase-G1-synthesis.md` + `docs/phase-G0-census.md`.
   - **G1** — re-labelled "accumulator" attribution (success = survives+appreciates over N days). ◐
     **Label BUILT + tested (`grad/accumulator_label.py`): resolves at the horizon, survival-gated
-    (moon-then-rug = FAILURE), point-in-time. NOT YET RUN — data-gated. The collection that feeds
-    it is now FIXED (graduation-aware, 2026-06-07) and accruing, but the pinned graduations need
-    days/weeks of UPTIME to ripen into multi-day arcs. Ready to drive a WalletScoreBook rebuild
-    once coverage is meaningful.**
+    (moon-then-rug = FAILURE), point-in-time. WIRING BUILT-AHEAD (2026-06-07):
+    `grad/wallet_book.py` + CLI `grad-walletbook` feed the accumulator label onto the genuine
+    graduated cohort's post-grad arcs through the SAME point-in-time `WalletScoreBook`
+    (`from_attempts` refactor; survivorship-safe — rugged grads are the failures). Smoke-run on
+    the live snapshot: 229 genuine grads → 15 cohort pools → 1,077 trials / 960 wallets, **0
+    RESOLVED → "not ripened"** (correct: 7-day horizon vs hours of uptime). Post-grad coverage has
+    climbed 2/185 → 15/229 since the collection fix. NOT YET SCORABLE — data-gated; the pinned
+    graduations need days/weeks of UPTIME to ripen. When they do, just re-run `grad-walletbook`
+    against a snapshot copy. 127/127 tests green, ruff clean.**
   - **G2** — graduation-momentum **KILL-GATE** (+ orchestrator-fade overlay). ☐
   - **G3** — (GO only) attribution model proper + robustness. ☐
 - **Cross-cutting** — Direction 3: reuse the Iteration-1 orchestrator detector as a rug/avoid gate
@@ -351,8 +370,8 @@ survivorship-complete ∧ beats-blind+random ∧ robust ∧ enough-fires (strate
   (Dune Plus ~$399 / CoinGecko Analyst $129) was **not** chosen.
 - **⏳ IN PROGRESS — dataset (YELLOW #1).** (a) Free forward-collection — **RUNNING:**
   `autocrypt collect` (enumerate + tail swaps for a 24h-held survivorship-safe cohort), unattended
-  via `nohup` → `data/collect.log`. Caveat: a `nohup` process does not survive reboot — a launchd
-  job is the durable form (not installed unprompted). Coverage is a 40-pool rolling sample,
+  now under the durable launchd LaunchAgent `com.autocrypt.collector` (survives reboot/crash;
+  the durable form is now installed — see the G0-durability note above). Coverage is a 40-pool rolling sample,
   wall-clock-bound (only hours of data so far). (b) **Historical archive — DIRECTION CHANGED AGAIN
   (Phase 2d):** Bitquery (~$2–6k) shelved; Flipside-free turned out **effectively closed** to new
   free self-signup (enterprise/demo model, June 2026) → **decision = DUNE `dex_solana.trades` as the

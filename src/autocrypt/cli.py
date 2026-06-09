@@ -900,5 +900,81 @@ def grad_detect(
         console.print(f"[green]wrote full census → {out}[/green]")
 
 
+@app.command(name="grad-walletbook")
+def grad_walletbook(
+    n_days: float = typer.Option(7.0, help="Accumulator horizon: survive+appreciate over N days."),
+    appreciate_pct: float = typer.Option(0.5, help="Success needs price to reach entry*(1+this)."),
+    survival_floor: float = typer.Option(0.2, help="Rug if price ever falls below entry*this."),
+    min_attempts: int = typer.Option(3, help="Resolved trials a wallet needs to be scorable."),
+    min_lag_s: float = typer.Option(120.0, help="BC→AMM lag below this is a suspect co-launch."),
+    limit: int = typer.Option(20, help="How many top accumulator wallets to show."),
+    out: str = typer.Option("", help="Write the full markdown report to this path."),
+) -> None:
+    """G1 — build the accumulator wallet-attribution book over the graduated cohort (read-only).
+
+    Wires the days-horizon survive-AND-appreciate label onto the SAME point-in-time
+    `WalletScoreBook` used by the attribution model, but over genuine graduations' post-graduation
+    swap arcs — surfacing wallets whose post-graduation buys precede multi-day accumulator wins.
+    Survivorship-safe (rugged graduations are the failures) and no look-ahead (trials resolve at
+    the horizon). DATA-GATED: until the collector accrues multi-day arcs it reports "not ripened"
+    rather than scoring anyone — that is the honest state, not a bug.
+
+    NOTE: the live `collect` writer holds the DuckDB lock, so point DB_URL at a SNAPSHOT COPY:
+      cp data/autocrypt_graduation.duckdb /tmp/grad_snap.duckdb
+      DB_URL=duckdb:///tmp/grad_snap.duckdb autocrypt grad-walletbook --out docs/phase-G1-book.md
+    """
+    from autocrypt.attribution.wallet_book import AttributionConfig
+    from autocrypt.grad.accumulator_label import AccumulatorLabel
+    from autocrypt.grad.wallet_book import (
+        build_accumulator_book,
+        render_markdown,
+        top_accumulator_wallets,
+    )
+
+    store = _store(read_only=True)
+    label_cfg = AccumulatorLabel(
+        n_days=n_days, appreciate_pct=appreciate_pct, survival_floor=survival_floor
+    )
+    score_cfg = AttributionConfig(min_attempts=min_attempts)
+    book, stats, attempts = build_accumulator_book(
+        store, label_cfg=label_cfg, score_cfg=score_cfg, min_lag_s=min_lag_s
+    )
+    top = top_accumulator_wallets(book, attempts, stats.now_ts, limit=limit)
+    store.close()
+
+    t = Table(title=f"G1 accumulator book — {n_days:g}-day survive+appreciate")
+    t.add_column("metric", style="cyan")
+    t.add_column("value", justify="right")
+    t.add_row("genuine graduations (denominator)", f"{stats.n_genuine_graduations:,}")
+    t.add_row("cohort pools (≥1 post-grad swap)", f"{stats.n_cohort_pools:,}")
+    t.add_row("trials (wallet-pool)", f"{stats.n_attempts:,}")
+    t.add_row("distinct wallets", f"{stats.n_wallets:,}")
+    t.add_row("trials RESOLVED (horizon elapsed)", f"{stats.n_resolved:,}")
+    t.add_row("resolved successes", f"{stats.n_resolved_successes:,}")
+    t.add_row("scorable wallets (≥min_attempts)", f"{stats.n_scorable_wallets:,}")
+    console.print(t)
+
+    if not stats.ripened:
+        console.print(
+            "[yellow]NOT YET RIPENED[/yellow] — no wallet has enough resolved multi-day trials "
+            "to score. Honest data-gated state; let the collector accrue and re-run."
+        )
+    else:
+        tw = Table(title=f"Top accumulator wallets (lift over base, n={len(top)})")
+        tw.add_column("wallet", style="cyan")
+        tw.add_column("attempts", justify="right")
+        tw.add_column("leads", justify="right")
+        tw.add_column("lift", justify="right")
+        for wallet, sc in top:
+            tw.add_row(wallet, str(sc.attempts), str(sc.leads), f"{sc.lift:+.3f}")
+        console.print(tw)
+
+    if out:
+        from pathlib import Path
+
+        Path(out).write_text(render_markdown(stats, top))
+        console.print(f"[green]wrote full report → {out}[/green]")
+
+
 if __name__ == "__main__":
     app()

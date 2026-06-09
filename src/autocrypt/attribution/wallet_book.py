@@ -57,7 +57,15 @@ class WalletScore:
 
 
 @dataclass(slots=True)
-class _Attempt:
+class Attempt:
+    """One resolved Bernoulli trial for a wallet: did its first buy precede a 'success'?
+
+    A trial is venue/label-agnostic — the *definition* of success and the resolution time live
+    in whatever produced it (the fast-pump run-up label in `_pool_attempts`, or Track G's
+    survive-AND-appreciate accumulator label). `WalletScoreBook.from_attempts` consumes these
+    directly, so a different cohort/label reuses the identical point-in-time scoring machinery.
+    """
+
     wallet: str
     resolution_knowable: float  # earliest wall-clock the outcome could be known
     success: bool
@@ -92,7 +100,7 @@ class _SparseMax:
 _RMQ_MIN_N = 64
 
 
-def _pool_attempts(pool: PoolData, cfg: AttributionConfig) -> list[_Attempt]:
+def _pool_attempts(pool: PoolData, cfg: AttributionConfig) -> list[Attempt]:
     """Each wallet's first-buy trial in this pool, with its point-in-time resolution time.
 
     Forward price path is read in EVENT-TIME order (the on-chain truth), but the trial's
@@ -126,7 +134,7 @@ def _pool_attempts(pool: PoolData, cfg: AttributionConfig) -> list[_Attempt]:
         if s.side == "buy" and s.signer and s.price_usd > 0 and s.signer not in first_buy:
             first_buy[s.signer] = i
 
-    attempts: list[_Attempt] = []
+    attempts: list[Attempt] = []
     for wallet, i in first_buy.items():
         lo, hi = i + 1, window_end[i]
         target = prices[i] * (1.0 + cfg.runup_pct)
@@ -138,7 +146,7 @@ def _pool_attempts(pool: PoolData, cfg: AttributionConfig) -> list[_Attempt]:
                     success = True
                     res_kt = kts[k]  # success: knowable when the crossing print lands
                     break
-        attempts.append(_Attempt(wallet=wallet, resolution_knowable=res_kt, success=success))
+        attempts.append(Attempt(wallet=wallet, resolution_knowable=res_kt, success=success))
     return attempts
 
 
@@ -172,12 +180,25 @@ class WalletScoreBook:
 
     @classmethod
     def build(cls, pools: list[PoolData], cfg: AttributionConfig) -> WalletScoreBook:
-        per_wallet: dict[str, list[_Attempt]] = {}
-        all_attempts: list[_Attempt] = []
+        """Build from the fast-pump run-up label over a pool universe (Iteration-1 / Track-M)."""
+        all_attempts: list[Attempt] = []
         for pool in pools:
-            for a in _pool_attempts(pool, cfg):
-                per_wallet.setdefault(a.wallet, []).append(a)
-                all_attempts.append(a)
+            all_attempts.extend(_pool_attempts(pool, cfg))
+        return cls.from_attempts(all_attempts, cfg)
+
+    @classmethod
+    def from_attempts(cls, attempts: list[Attempt], cfg: AttributionConfig) -> WalletScoreBook:
+        """Build directly from pre-labelled trials — label/cohort-agnostic.
+
+        Separated from `build` so a different success definition (e.g. Track G's days-horizon
+        survive-AND-appreciate accumulator label) can feed the IDENTICAL point-in-time scoring:
+        per-wallet and global resolution-time timelines with prefix lead counts, queried under
+        the `knowable_at <= T` gate. `cfg` supplies only the Beta-Binomial shrink knobs here
+        (`prior_strength`, `prior_base_rate`); the run-up knobs are irrelevant to scoring.
+        """
+        per_wallet: dict[str, list[Attempt]] = {}
+        for a in attempts:
+            per_wallet.setdefault(a.wallet, []).append(a)
 
         wallets: dict[str, _WalletTimeline] = {}
         for wallet, atts in per_wallet.items():
@@ -188,10 +209,10 @@ class WalletScoreBook:
                 cum_leads[k + 1] = cum_leads[k] + (1 if a.success else 0)
             wallets[wallet] = _WalletTimeline(res_times=res_times, cum_leads=cum_leads)
 
-        all_attempts.sort(key=lambda a: a.resolution_knowable)
-        g_times = [a.resolution_knowable for a in all_attempts]
-        g_cum = [0] * (len(all_attempts) + 1)
-        for k, a in enumerate(all_attempts):
+        all_sorted = sorted(attempts, key=lambda a: a.resolution_knowable)
+        g_times = [a.resolution_knowable for a in all_sorted]
+        g_cum = [0] * (len(all_sorted) + 1)
+        for k, a in enumerate(all_sorted):
             g_cum[k + 1] = g_cum[k] + (1 if a.success else 0)
 
         return cls(wallets, g_times, g_cum, cfg)

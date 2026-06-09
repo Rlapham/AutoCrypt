@@ -101,11 +101,20 @@ of delivering the data it's meant to.
 
 ## Open questions / follow-ups
 
-1. **Durability is the binding risk.** Manual-relaunch means any reboot silently kills
-   collection (it just cost 4 days). Revisit if reboots are frequent: repo relocation out of
-   `~/Documents` is the cleanest durable fix (avoids macOS TCC entirely); FDA-to-uv + launchd is
-   the in-place alternative. Until then: **`ps aux | grep "autocrypt collect"` at the start of
-   every session; relaunch if empty.**
+> **UPDATE 2026-06-07 (post-G1): durability #1 is RESOLVED.** The durable fix described below as
+> "the cleanest" was deployed: the repo was relocated to `~/Dev/AutoCrypt` (out of the
+> TCC-protected `~/Documents`) and the collector now runs under a launchd LaunchAgent
+> `com.autocrypt.collector` (`RunAtLoad`+`KeepAlive`, runs `scripts/g0_collect.sh`), verified
+> bootstrapped + running with KeepAlive observed auto-restarting it. Collection now survives
+> reboot (auto-starts at login) and crash. **Consequence: do NOT run the manual `nohup`
+> relaunch from the kickoff below — a second writer collides on the single-writer DuckDB lock.**
+> The Track-M snapshot loop is NOT under launchd and is currently stopped (optional; Track M is a
+> closed NO-GO). One real reboot test remains as final human confirmation.
+
+1. **Durability is the binding risk.** ~~Manual-relaunch means any reboot silently kills
+   collection (it just cost 4 days).~~ **RESOLVED — see the update banner above (launchd
+   LaunchAgent, repo relocated out of `~/Documents`).** Historical note: the chosen fix was repo
+   relocation, which avoids macOS TCC entirely.
 2. **Grad-slot saturation (a future tuning knob, not yet a problem).** Graduations are pinned
    168h; if live+dead graduations ever approach `watch_max`, discovery (hence finding *new*
    graduations) gets squeezed. Mitigations if it appears: raise `--watch-max`, shorten grad
@@ -123,7 +132,9 @@ of delivering the data it's meant to.
 `src/autocrypt/cli.py` (`collect` flags), `tests/test_collect.py`, `scripts/g0_collect_interim.sh`.
 **119/119 green, ruff clean.** No paid spend, no keys, no funds, no trading. Track-M store
 untouched. Census re-run → `docs/phase-G0-census.md` (current: 185 genuine grads, 1.68% rate,
-2/185 pre-fix coverage). Background daemons at session end (both interim `nohup`, die on reboot):
+2/185 pre-fix coverage). Background daemons at session end (since superseded — see the
+durability UPDATE above; the G0 collector now runs durably under launchd `com.autocrypt.collector`
+via `scripts/g0_collect.sh`, not the `g0_collect_interim.sh` nohup shown here):
 
 | Process | PID (at write) | Writes to | Purpose |
 |---|---|---|---|
@@ -163,20 +174,26 @@ of 50 AMM pools ever tailed, longest arc 1.32h, ZERO ≥6h. FIXED + DEPLOYED: gr
 admission — graduation pools (AMM pool for a mint already seen on a bonding curve) are PINNED
 (never locked out, evict oldest discovery if full) and held 168h for the multi-day arc;
 discovery pools age out at 6h so the watchlist never freezes. Validated LIVE: first tick
-grad_watched=5 (vs 2/185 over 10h before). 119/119 green, ruff clean. Durability stays
-interim nohup (operator's call) — so COLLECTION DIES ON REBOOT.
+grad_watched=5 (vs 2/185 over 10h before). 119/119 green, ruff clean. DURABILITY since
+RESOLVED (post-G1): repo relocated to ~/Dev/AutoCrypt + launchd LaunchAgent
+com.autocrypt.collector (RunAtLoad+KeepAlive) — collection now survives reboot/crash.
 
 THIS SESSION:
-  1. CHECK BACKGROUND JOBS FIRST (both die on reboot — relaunch if `ps aux | grep
-     "autocrypt collect"` is empty):
-       - G0 collector (grad-aware): nohup bash scripts/g0_collect_interim.sh > data/g0_collect.interim.log 2>&1 &
-       - Track-M snapshot:          nohup bash scripts/midcap_snapshot_loop.sh > data/midcap_snapshot.log 2>&1 &
+  1. CHECK THE COLLECTOR IS HEALTHY (it is now durable under launchd — do NOT start a manual
+     nohup collector; a second writer collides on the single-writer DuckDB lock):
+       - Verify running:  launchctl print "gui/$(id -u)/com.autocrypt.collector" | grep state
+                          (or `ps aux | grep "autocrypt collect"` — expect exactly ONE chain)
+       - If somehow stopped: launchctl kickstart -k "gui/$(id -u)/com.autocrypt.collector"
+       - Track-M snapshot loop is NOT under launchd and is optional (Track M is a closed NO-GO);
+         only relaunch if you specifically want fresh Track-M snapshots:
+         nohup bash scripts/midcap_snapshot_loop.sh > data/midcap_snapshot.log 2>&1 &
   2. RE-RUN THE CENSUS to measure how post-grad coverage has ripened since the fix:
        cp data/autocrypt_graduation.duckdb /tmp/grad_snap.duckdb
        [ -f data/autocrypt_graduation.duckdb.wal ] && cp data/autocrypt_graduation.duckdb.wal /tmp/grad_snap.duckdb.wal
        DB_URL=duckdb:////tmp/grad_snap.duckdb uv run autocrypt grad-detect --out docs/phase-G0-census.md
      Report the post-grad coverage number plainly (how many genuine graduations now have
-     multi-DAY post-grad arcs). Also check `grad_watched` in data/g0_collect.interim.log.
+     multi-DAY post-grad arcs). Also check `grad_watched` in data/g0_collect.err.log (the
+     launchd collector logs there; the old data/g0_collect.interim.log is the retired nohup path).
   3. IF a meaningful number of graduations now have multi-day arcs → G1: wire
      grad/accumulator_label.label_accumulator_entry into a WalletScoreBook rebuild (reuse
      attribution/wallet_book.py) over the GRADUATED cohort to surface a *followable*
@@ -187,8 +204,10 @@ THIS SESSION:
      ∧ beats blind+random w/ multiple-comparison discount ∧ robust ∧ enough fires). GO/NO-GO
      is YELLOW.
   4. IF still too thin (likely — ripening takes weeks of UPTIME): do NOT force G1/G2. Report
-     coverage plainly and let it accrue. Consider revisiting durability if reboots keep
-     killing collection (repo relocation out of ~/Documents is the cleanest fix).
+     coverage plainly and let it accrue. (Durability is no longer a risk — launchd now keeps the
+     collector alive across reboot/crash.) NOTE: the G1 accumulator WalletScoreBook wiring was
+     BUILT AHEAD on 2026-06-07 (`grad/wallet_book.py` + CLI `grad-walletbook`); when coverage
+     ripens, just run `grad-walletbook` against a snapshot copy rather than building from scratch.
 
 Autonomy: GREEN code/backtest/free data; YELLOW paid tiers + universe/label changes +
 collector admission policy + each GO/NO-GO; RED unchanged. Single-writer rule: the live

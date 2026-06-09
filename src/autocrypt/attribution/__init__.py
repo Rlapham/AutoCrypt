@@ -10,12 +10,14 @@ from autocrypt.attribution.signal import (
     compute_attribution,
 )
 from autocrypt.attribution.wallet_book import (
+    Attempt,
     AttributionConfig,
     WalletScore,
     WalletScoreBook,
 )
 
 __all__ = [
+    "Attempt",
     "AttributionConfig",
     "AttributionResult",
     "AttributionSignalConfig",
