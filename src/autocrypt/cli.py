@@ -178,6 +178,11 @@ def collect(
         6.0, help="Hold a non-graduation discovery pool only this many hours (keeps slots open)."
     ),
     tx_pages: int = typer.Option(2, help="Pages of recent swaps tailed per pool per cycle."),
+    state_file: str = typer.Option(
+        "",
+        help="JSON checkpoint of the watchlist/graduation memory so PINNED graduations keep "
+        "being tailed across restarts (sleep/reboot) — empty = <db>.collector_state.json.",
+    ),
 ) -> None:
     """Forward-collect a survivorship-complete SWAP dataset (the free multi-day path).
 
@@ -189,10 +194,17 @@ def collect(
     shorter `--discovery-age-h` so the watchlist never freezes.
     Run unattended for days/weeks to accumulate the dataset the kill-gate profiler needs.
     """
+    from pathlib import Path
+
     from autocrypt.ingestion.collect import run_collect
 
     store = _store()
     run_id = _run_id("collect")
+    state_path = (
+        Path(state_file)
+        if state_file
+        else get_settings().duckdb_path.with_suffix(".collector_state.json")
+    )
     total = asyncio.run(
         run_collect(
             store,
@@ -205,6 +217,7 @@ def collect(
             max_pool_age_s=max_pool_age_h * 3600.0,
             discovery_age_s=discovery_age_h * 3600.0,
             tx_pages=tx_pages,
+            state_path=state_path,
         )
     )
     store.close()

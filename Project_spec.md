@@ -6,6 +6,26 @@
 
 ## Current status
 
+- **G1b (2026-06-16) — COLLECTION CONTINUITY FIXED; arc ceiling root-caused. The "durability
+  RESOLVED via launchd" claim from G1 was only half true.** A status check found that despite
+  ~13 days of calendar time, the post-grad **arc length** — the actual Track-G gate — was
+  failing: census shows 1,287 genuine graduations, post-grad coverage **260/1,287 (20%, up from
+  2/185 → admission fix works)**, BUT the **longest arc across ALL 5,173 swapping pools is 15.9h,
+  with ZERO ≥24h** (median grad arc 0.2h). Root cause: the collector was **crash-looping on 429
+  retry-exhaustion (308× in the log)** — `get_json` reraises after 5 retries, the
+  `RetryableHTTPError` propagated out and killed the process; launchd `KeepAlive` restarted it
+  with an **empty in-memory watchlist**, dropping every pinned graduation. Laptop sleep (whole
+  days missing: Jun 4–6, 14–15) did the same. So no pool accrued >1 crash-free run of swaps.
+  **FIXED + DEPLOYED + VERIFIED LIVE (all GREEN):** (a) **per-pool 429 resilience** —
+  `_tail_watchlist`/`_enumerate_new_pools` skip a pool/page on `RetryableHTTPError` and finish the
+  tick instead of crashing; (b) **atomic per-tick state checkpoint** `<db>.collector_state.json`
+  (watchlist + `bc_mints` + `retired`), reloaded on startup so pins survive restart/sleep/reboot
+  (verified: reloaded 52 pools / 12 grads); (c) **`caffeinate -ims`** wrapper in `g0_collect.sh`
+  (caveat: cannot beat lid-close-on-battery — keep lid open / on AC, else move to an always-on
+  host). **Full-kill teardown added: `scripts/g0_stop.sh`** (`bootout` + `disable` + reap strays,
+  despite KeepAlive). 132/132 green, ruff + mypy clean (+5 tests). Arcs can now exceed ~16h; G1/G2
+  remain data-gated but are no longer structurally stuck. Re-run the arc census in a few days.
+  See `docs/phase-G1b-synthesis.md`.
 - **NOW: ITERATION 2 — TRACK G (main goal). The Track-G data pipeline was found BROKEN and was
   fixed + redeployed this session (G1, 2026-06-07). Diagnosis: Track G is blocked by collection
   INFRASTRUCTURE, not its thesis — (a) collection died on the Jun-7 reboot (~4 days lost; nohup

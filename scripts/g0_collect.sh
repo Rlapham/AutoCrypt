@@ -27,8 +27,19 @@ cd "$REPO"
 # Dedicated graduation-cohort store (kept separate from autocrypt.duckdb).
 export DB_URL="duckdb:///${REPO}/data/autocrypt_graduation.duckdb"
 
+# Why caffeinate: this runs on a laptop. A launchd LaunchAgent does NOT run while the
+# Mac is asleep, and on wake KeepAlive restarts a FRESH process — which (before the
+# state-checkpoint fix) dropped the in-memory pin set, so no graduation accrued more
+# than one awake-session of swaps and every arc capped at ~16h. `caffeinate -ims`
+# asserts no idle / no disk / no system sleep for as long as the collector runs (it
+# wraps the command and the assertion dies with it). The watchlist is also now
+# checkpointed to <db>.collector_state.json each tick, so even a real restart resumes
+# the same pinned graduations and arcs keep growing toward the 168h window.
+# CAVEAT (operator): caffeinate cannot defeat LID-CLOSE sleep on battery — keep the lid
+# open or the machine on AC for continuous overnight collection.
+#
 # Multi-day hold so the days-horizon arc is captured; polite sampling cadence.
-exec /usr/local/bin/uv run autocrypt collect \
+exec /usr/bin/caffeinate -ims /usr/local/bin/uv run autocrypt collect \
   --interval 90 \
   --iterations 0 \
   --enum-pages 3 \

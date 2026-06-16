@@ -12,8 +12,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from autocrypt.ingestion.collect import _admit_candidates, _age_out, _is_graduation
+from autocrypt.ingestion.collect import (
+    _admit_candidates,
+    _age_out,
+    _is_graduation,
+    _load_state,
+    _save_state,
+)
 
 
 def _entry(age_s: float, tier: str = "disc") -> dict:
@@ -154,3 +161,127 @@ def test_admission_all_graduation_watchlist_cannot_make_room() -> None:
         retired, bc_mints, watch_max=3, grad_reserved=1,
     )
     assert admitted == 0 and len(watch) == 3 and "grad_new" not in watch
+
+
+# --- state persistence (the cross-restart arc fix) ----------------------------------
+
+
+def _full_entry(tier: str, created: datetime) -> dict:
+    """A watchlist entry shaped exactly as `_admit` builds it (incl. `phase`)."""
+    return {
+        "ctx": {"pool_address": "P", "base_mint": "M", "quote_mint": "Q", "dex": "pumpswap"},
+        "created_at": created,
+        "phase": "AMM" if tier == "grad" else "BC",
+        "tier": tier,
+    }
+
+
+def test_state_roundtrip_preserves_pins_and_memory(tmp_path: Path) -> None:
+    """Saving then loading must reconstruct the watchlist (with tz-aware datetimes),
+    the graduation-detector `bc_mints`, and `retired` byte-for-byte — this is what lets a
+    pinned graduation keep being tailed across a restart instead of being dropped."""
+    born = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+    watch = {"gradA": _full_entry("grad", born), "discB": _full_entry("disc", born)}
+    bc_mints = {"M1", "M2", "M3"}
+    retired = {"oldX", "oldY"}
+    path = tmp_path / "state.json"
+
+    _save_state(path, watch, bc_mints, retired)
+    w2, bc2, ret2 = _load_state(path)
+
+    assert w2 == watch  # datetimes survive as tz-aware datetimes, not strings
+    assert w2["gradA"]["created_at"].tzinfo is not None
+    assert bc2 == bc_mints
+    assert ret2 == retired
+
+
+def test_load_state_missing_file_starts_fresh(tmp_path: Path) -> None:
+    """No checkpoint yet (first ever run) → empty state, no crash."""
+    w, bc, ret = _load_state(tmp_path / "does_not_exist.json")
+    assert w == {} and bc == set() and ret == set()
+
+
+def test_load_state_corrupt_file_starts_fresh(tmp_path: Path) -> None:
+    """A truncated/garbage checkpoint must NOT crash the collector — start fresh."""
+    path = tmp_path / "state.json"
+    path.write_text("{not valid json")
+    w, bc, ret = _load_state(path)
+    assert w == {} and bc == set() and ret == set()
+
+
+def test_load_state_version_mismatch_starts_fresh(tmp_path: Path) -> None:
+    """An old/foreign layout version is ignored rather than mis-parsed."""
+    path = tmp_path / "state.json"
+    path.write_text('{"version": 999, "watchlist": {"x": {}}}')
+    w, bc, ret = _load_state(path)
+    assert w == {} and bc == set() and ret == set()
+
+
+# --- 429-storm crash resilience (the dominant arc-ceiling cause) ---------------------
+
+
+class _FakeSwap:
+    def __init__(self, eid: str) -> None:
+        self._eid = eid
+        self.commitment = None
+        self.observed_at = None
+
+    def event_id(self) -> str:
+        return self._eid
+
+
+class _FakeStore:
+    """Counts rows written; `_tail_watchlist` reports count-delta."""
+
+    def __init__(self) -> None:
+        self.rows: list[object] = []
+
+    def count(self) -> int:
+        return len(self.rows)
+
+    def write_events(self, events: list) -> None:
+        self.rows.extend(events)
+
+
+class _FakeDP:
+    """One pool tails fine; the other raises RetryableHTTPError (a 429 storm that
+    exhausted get_json's retries) — the loop must skip it, not crash."""
+
+    def __init__(self, bad_pool: str) -> None:
+        self.bad_pool = bad_pool
+
+    async def iter_pool_transactions(self, pool_address: str, **_: object):
+        from autocrypt.providers.base import RetryableHTTPError
+
+        if pool_address == self.bad_pool:
+            raise RetryableHTTPError("429 for " + pool_address)
+        yield {"pool": pool_address}
+
+    def to_swap(self, tx: dict, **_: object) -> _FakeSwap:
+        return _FakeSwap(f"swap-{tx['pool']}")
+
+    def swap_to_wallet_event(self, swap: _FakeSwap) -> _FakeSwap:
+        return _FakeSwap(f"we-{swap.event_id()}")
+
+
+def test_tail_skips_pool_on_retry_exhaustion_not_crash() -> None:
+    """A pool whose tail exhausts retries is skipped for the tick; the others still
+    collect and the call returns normally (no exception escapes to crash the loop)."""
+    import asyncio
+
+    from autocrypt.ingestion.collect import _tail_watchlist
+
+    watch = {
+        "goodP": {"ctx": {"pool_address": "goodP"}, "created_at": datetime.now(UTC), "tier": "grad"},
+        "badP": {"ctx": {"pool_address": "badP"}, "created_at": datetime.now(UTC), "tier": "grad"},
+    }
+    store = _FakeStore()
+    written = asyncio.run(
+        _tail_watchlist(
+            store, _FakeDP("badP"), watch, set(),
+            run_id="t", tx_pages=1, page_limit=10, latency=timedelta(seconds=2),
+        )
+    )
+    # good pool produced a swap + a wallet-event (2 rows); bad pool was skipped, not fatal.
+    assert written == 2
+    assert "badP" in watch  # still watched — it gets retried next tick

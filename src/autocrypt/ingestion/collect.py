@@ -25,15 +25,100 @@ as backfill reconstructs it, so live-collected and historical rows stay comparab
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from autocrypt.grad.graduation import venue_phase
 from autocrypt.logging import get_logger
+from autocrypt.providers.base import RetryableHTTPError
 from autocrypt.providers.dexpaprika import DexPaprika
 from autocrypt.schema import BaseEvent, Commitment
 from autocrypt.storage.store import EventStore
 
 log = get_logger("collect")
+
+# Bump when the on-disk state layout changes incompatibly (a mismatch is ignored,
+# not migrated — the collector just starts fresh, which is safe).
+_STATE_VERSION = 1
+
+
+def _load_state(path: Path) -> tuple[dict[str, dict], set[str], set[str]]:
+    """Reload watchlist + graduation-detector memory (`bc_mints`) + `retired` from a
+    prior run so PINNED GRADUATIONS KEEP BEING TAILED ACROSS PROCESS RESTARTS.
+
+    This is the fix for the Track-G arc ceiling: the watchlist/bc_mints lived only in
+    memory, so every restart (laptop sleep, launchd KeepAlive, reboot) dropped the pin
+    set and re-enumerated from scratch. A graduation pinned yesterday was never
+    re-tailed today, so no pool accrued more than one continuous-run's worth of swaps —
+    capping every arc at the awake-session length (~16h observed) and starving the
+    multi-day accumulator the kill-gate needs. Persisting + reloading lets a graduation's
+    arc resume after a restart, up to its full `max_pool_age_s` measured from creation.
+
+    A missing or corrupt file yields empty state (start fresh) rather than crashing the
+    collector. Returns (watchlist, bc_mints, retired)."""
+    if not path.exists():
+        return {}, set(), set()
+    try:
+        raw = json.loads(path.read_text())
+        if raw.get("version") != _STATE_VERSION:
+            log.warning("collector_state_version_mismatch", found=raw.get("version"))
+            return {}, set(), set()
+        watchlist: dict[str, dict] = {
+            addr: {
+                "ctx": e["ctx"],
+                "created_at": datetime.fromisoformat(e["created_at"]),
+                "phase": e["phase"],
+                "tier": e["tier"],
+            }
+            for addr, e in raw.get("watchlist", {}).items()
+        }
+        bc_mints = set(raw.get("bc_mints", []))
+        retired = set(raw.get("retired", []))
+        log.info(
+            "collector_state_loaded",
+            watched=len(watchlist),
+            grad_watched=sum(1 for e in watchlist.values() if e.get("tier") == "grad"),
+            bc_mints=len(bc_mints),
+            retired=len(retired),
+        )
+        return watchlist, bc_mints, retired
+    except (ValueError, KeyError, OSError) as exc:  # corrupt/partial file → start fresh
+        log.warning("collector_state_load_failed", error=str(exc))
+        return {}, set(), set()
+
+
+def _save_state(
+    path: Path,
+    watchlist: dict[str, dict],
+    bc_mints: set[str],
+    retired: set[str],
+) -> None:
+    """Persist collector state atomically (temp file + `os.replace`) so a crash/sleep at
+    any moment resumes the same pinned cohort. Best-effort: a write error is logged, never
+    fatal to collection. `datetime` `created_at` is stored as ISO so `_age_out` keeps
+    measuring a graduation's hold window from its true creation time across restarts."""
+    try:
+        payload = {
+            "version": _STATE_VERSION,
+            "watchlist": {
+                addr: {
+                    "ctx": e["ctx"],
+                    "created_at": e["created_at"].isoformat(),
+                    "phase": e["phase"],
+                    "tier": e["tier"],
+                }
+                for addr, e in watchlist.items()
+            },
+            "bc_mints": sorted(bc_mints),
+            "retired": sorted(retired),
+        }
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload))
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("collector_state_save_failed", error=str(exc))
 
 
 def _ctx_from_pool_created(pc: object) -> dict:
@@ -97,21 +182,27 @@ async def _enumerate_new_pools(
     events: list[BaseEvent] = []
     # Dedupe this tick's candidates by address (the stream can repeat across pages).
     fresh: dict[str, object] = {}
-    async for pool in dp.iter_pools_by_creation(
-        max_pools=pages * page_limit, page_limit=page_limit, max_pages=pages
-    ):
-        pc = dp.to_pool_created(pool, run_id=run_id, latency=latency)
-        if pc is None:
-            continue
-        pc.observed_at = observed  # audit only
-        events.append(pc)
-        # Learn bonding-curve mints from EVERY enumerated pool (not just admitted ones), so
-        # a graduation is recognised even if the bonding-curve pool itself was never tailed.
-        if venue_phase(pc.dex) == "BC":
-            bc_mints.add(pc.base_mint)
-        addr = pc.pool_address
-        if addr not in watchlist and addr not in retired and addr not in fresh:
-            fresh[addr] = pc
+    # Same crash-resilience as tailing: if a 429/5xx storm exhausts retries mid-enumeration,
+    # keep whatever pages we already got and proceed to tailing rather than crashing the
+    # collector (a crash drops the watchlist and resets every graduation arc).
+    try:
+        async for pool in dp.iter_pools_by_creation(
+            max_pools=pages * page_limit, page_limit=page_limit, max_pages=pages
+        ):
+            pc = dp.to_pool_created(pool, run_id=run_id, latency=latency)
+            if pc is None:
+                continue
+            pc.observed_at = observed  # audit only
+            events.append(pc)
+            # Learn bonding-curve mints from EVERY enumerated pool (not just admitted ones),
+            # so a graduation is recognised even if its bonding-curve pool was never tailed.
+            if venue_phase(pc.dex) == "BC":
+                bc_mints.add(pc.base_mint)
+            addr = pc.pool_address
+            if addr not in watchlist and addr not in retired and addr not in fresh:
+                fresh[addr] = pc
+    except RetryableHTTPError as exc:
+        log.warning("enumerate_truncated", error=str(exc), got=len(events))
     store.write_events(events)
     return _admit_candidates(
         watchlist,
@@ -203,24 +294,38 @@ async def _tail_watchlist(
     """
     events: list[BaseEvent] = []
     observed = datetime.now(UTC)
+    skipped = 0
     for entry in watchlist.values():
         ctx = entry["ctx"]
-        async for tx in dp.iter_pool_transactions(
-            ctx["pool_address"], page_limit=page_limit, max_pages=tx_pages
-        ):
-            swap = dp.to_swap(tx, **ctx, run_id=run_id, latency=latency)
-            if swap is None:
-                continue
-            swap.commitment = Commitment.confirmed
-            swap.observed_at = observed
-            eid = swap.event_id()
-            if eid in seen:
-                continue
-            seen.add(eid)
-            we = dp.swap_to_wallet_event(swap)
-            we.observed_at = observed
-            events.append(swap)
-            events.append(we)
+        # A 429/5xx storm that exhausts get_json's retries used to propagate out of here
+        # and CRASH the whole collector — launchd then restarted it with an empty watchlist,
+        # dropping every pinned graduation. That crash-loop (300+ times in the logs) was the
+        # dominant cause of the ~16h arc ceiling. Now one pool's retry-exhaustion just skips
+        # that pool for this tick (it stays watched; next tick retries it), so the tick
+        # completes, the state checkpoint is written, and graduation arcs keep accruing.
+        try:
+            async for tx in dp.iter_pool_transactions(
+                ctx["pool_address"], page_limit=page_limit, max_pages=tx_pages
+            ):
+                swap = dp.to_swap(tx, **ctx, run_id=run_id, latency=latency)
+                if swap is None:
+                    continue
+                swap.commitment = Commitment.confirmed
+                swap.observed_at = observed
+                eid = swap.event_id()
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                we = dp.swap_to_wallet_event(swap)
+                we.observed_at = observed
+                events.append(swap)
+                events.append(we)
+        except RetryableHTTPError as exc:
+            skipped += 1
+            log.warning("tail_pool_skipped", pool=ctx["pool_address"], error=str(exc))
+            continue
+    if skipped:
+        log.warning("tail_pools_skipped", skipped=skipped, watched=len(watchlist))
     before = store.count()
     store.write_events(events)
     return store.count() - before
@@ -272,6 +377,7 @@ async def run_collect(
     discovery_age_s: float = 21600.0,
     tx_pages: int = 2,
     latency: timedelta = timedelta(seconds=2),
+    state_path: Path | None = None,
 ) -> int:
     """Run the forward-collection loop. `max_iterations=None` runs until cancelled.
 
@@ -284,9 +390,12 @@ async def run_collect(
     Returns total swap/wallet records written (PoolCreated writes are not counted here).
     """
     dp = DexPaprika()
-    watchlist: dict[str, dict] = {}
-    retired: set[str] = set()
-    bc_mints: set[str] = set()  # mints ever seen on a bonding curve → graduation detector
+    # Resume the pinned cohort + graduation-detector memory from disk so arcs survive
+    # restarts (see `_load_state`); `None` (tests, ad-hoc runs) starts in-memory only.
+    if state_path is not None:
+        watchlist, bc_mints, retired = _load_state(state_path)
+    else:
+        watchlist, bc_mints, retired = {}, set(), set()
     seen: set[str] = set()
     total = 0
     i = 0
@@ -317,6 +426,10 @@ async def run_collect(
                 new_rows=written,  # net-new swap+wallet rows (post-dedup)
                 total_new_rows=total,
             )
+            # Checkpoint after every tick so a sleep/crash/restart resumes the same
+            # pinned cohort and graduation arcs continue accruing (the Track-G fix).
+            if state_path is not None:
+                _save_state(state_path, watchlist, bc_mints, retired)
             i += 1
             if max_iterations is None or i < max_iterations:
                 await asyncio.sleep(interval_s)
